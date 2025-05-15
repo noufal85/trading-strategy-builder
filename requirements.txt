@@ -1,0 +1,7 @@
+numpy>=1.20.0
+pandas>=1.3.0
+matplotlib>=3.4.0
+yfinance>=0.1.70
+websockets>=9.0,<11.0  # Compatible with alpaca-trade-api
+alpaca-trade-api>=3.0.0  # For live trading integration
+python-dotenv>=0.19.0  # For loading environment variables
