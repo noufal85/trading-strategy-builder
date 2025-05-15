@@ -25,7 +25,12 @@ class MovingAverageCrossover(Strategy):
         slow_period: int = 50,
         risk_per_trade: float = 0.02,
         stop_loss: float = 0.03,
-        take_profit: float = 0.06
+        take_profit: float = 0.06,
+        log_level: str = "INFO",
+        log_to_console: bool = True,
+        log_to_file: bool = True,
+        log_dir: str = "logs",
+        verbose: bool = False
     ):
         """
         Initialize the Moving Average Crossover strategy.
@@ -36,8 +41,20 @@ class MovingAverageCrossover(Strategy):
             risk_per_trade: Percentage of portfolio to risk per trade
             stop_loss: Stop loss percentage
             take_profit: Take profit percentage
+            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
+            log_to_console: Whether to log to console
+            log_to_file: Whether to log to file
+            log_dir: Directory to store log files
+            verbose: Whether to log verbose messages
         """
-        super().__init__(name="Moving Average Crossover")
+        super().__init__(
+            name="Moving Average Crossover",
+            log_level=log_level,
+            log_to_console=log_to_console,
+            log_to_file=log_to_file,
+            log_dir=log_dir,
+            verbose=verbose
+        )
         
         # Strategy parameters
         self.fast_period = fast_period
