@@ -72,7 +72,7 @@ class MovingAverageCrossover(Strategy):
             required_fields = ['symbol', 'timestamp', 'close']
             for field in required_fields:
                 if field not in data:
-                    print(f"Warning: Missing required field '{field}' in data: {data}")
+                    self.logger.warning(f"Missing required field '{field}' in data: {data}")
                     return None
             
             symbol = data['symbol']
@@ -80,14 +80,14 @@ class MovingAverageCrossover(Strategy):
             close_price = data['close']
             
             # Debug info
-            print(f"Processing data for {symbol} at {timestamp}: close={close_price}")
+            self.logger.debug(f"Processing data for {symbol} at {timestamp}: close={close_price}")
             
             # Initialize price history for this symbol if it doesn't exist
             if symbol not in self.price_history:
                 self.price_history[symbol] = []
                 self.fast_ma[symbol] = None
                 self.slow_ma[symbol] = None
-                print(f"Initialized price history for {symbol}")
+                self.logger.debug(f"Initialized price history for {symbol}")
             
             # Add price to history
             self.price_history[symbol].append(close_price)
@@ -114,14 +114,13 @@ class MovingAverageCrossover(Strategy):
                 self.slow_ma[symbol] = slow_ma_value
                 
                 # Debug info
-                print(f"{symbol} MAs: fast={fast_ma_value:.2f}, slow={slow_ma_value:.2f}")
+                self.logger.debug(f"{symbol} MAs: fast={fast_ma_value:.2f}, slow={slow_ma_value:.2f}")
                 
                 # Check for crossover if we have previous values
                 if prev_fast_ma is not None and prev_slow_ma is not None:
                     # Buy signal: fast MA crosses above slow MA
                     if prev_fast_ma <= prev_slow_ma and fast_ma_value > slow_ma_value:
-                        print(f"BUY SIGNAL for {symbol}: fast MA crossed above slow MA")
-                        return {
+                        signal = {
                             'type': 'BUY',
                             'symbol': symbol,
                             'price': close_price,
@@ -132,11 +131,11 @@ class MovingAverageCrossover(Strategy):
                                 'slow_ma': slow_ma_value
                             }
                         }
+                        return signal
                     
                     # Sell signal: fast MA crosses below slow MA
                     elif prev_fast_ma >= prev_slow_ma and fast_ma_value < slow_ma_value:
-                        print(f"SELL SIGNAL for {symbol}: fast MA crossed below slow MA")
-                        return {
+                        signal = {
                             'type': 'SELL',
                             'symbol': symbol,
                             'price': close_price,
@@ -147,14 +146,15 @@ class MovingAverageCrossover(Strategy):
                                 'slow_ma': slow_ma_value
                             }
                         }
+                        return signal
             else:
-                print(f"Not enough data for {symbol}: {len(self.price_history[symbol])}/{self.slow_period}")
+                self.logger.debug(f"Not enough data for {symbol}: {len(self.price_history[symbol])}/{self.slow_period}")
                 
         except Exception as e:
             import traceback
-            print(f"Error in on_data for {data.get('symbol', 'unknown')}: {str(e)}")
-            print(f"Data: {data}")
-            print("\nFull error traceback:")
+            self.logger.error(f"Error in on_data for {data.get('symbol', 'unknown')}: {str(e)}")
+            self.logger.error(f"Data: {data}")
+            self.logger.error("Full error traceback:")
             traceback.print_exc()
             return None
         

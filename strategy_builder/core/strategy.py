@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Tuple
 
 from ..utils.types import Signal, Trade, Position
+from ..utils.logger import StrategyLogger
 
 
 class Strategy(ABC):
@@ -16,17 +17,40 @@ class Strategy(ABC):
     and managing positions.
     """
     
-    def __init__(self, name: str = "BaseStrategy"):
+    def __init__(
+        self,
+        name: str = "BaseStrategy",
+        log_level: str = "INFO",
+        log_to_console: bool = True,
+        log_to_file: bool = True,
+        log_dir: str = "logs",
+        verbose: bool = False
+    ):
         """
         Initialize a new strategy.
         
         Args:
             name: A name for the strategy
+            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
+            log_to_console: Whether to log to console
+            log_to_file: Whether to log to file
+            log_dir: Directory to store log files
+            verbose: Whether to log verbose messages
         """
         self.name = name
         self.positions = []  # List of current positions
         self.trades = []     # List of historical trades
         self.signals = []    # List of generated signals
+        
+        # Initialize logger
+        self.logger = StrategyLogger(
+            strategy_name=name,
+            level=log_level,
+            log_to_console=log_to_console,
+            log_to_file=log_to_file,
+            log_dir=log_dir,
+            verbose=verbose
+        )
         
     @abstractmethod
     def on_data(self, data: Dict[str, Any]) -> Optional[Signal]:
@@ -70,6 +94,10 @@ class Strategy(ABC):
         """
         # Default implementation - override in subclasses for custom behavior
         self.signals.append(signal)
+        
+        # Log the signal
+        self.logger.log_signal(signal)
+        
         return None
     
     def on_trade(self, trade: Trade) -> None:
@@ -81,6 +109,10 @@ class Strategy(ABC):
         """
         # Default implementation - override in subclasses for custom behavior
         self.trades.append(trade)
+        
+        # Log the trade
+        portfolio_value = sum(t.get('pnl', 0) for t in self.trades)
+        self.logger.log_trade(trade, portfolio_value)
     
     def on_position_update(self, position: Position) -> None:
         """
@@ -99,16 +131,24 @@ class Strategy(ABC):
                 # Check if pos is a dictionary before trying to access it with dictionary-style indexing
                 if isinstance(pos, dict) and pos.get('symbol') == position.get('symbol'):
                     self.positions[i] = position
+                    # Log position update
+                    self.logger.log_position_update(position)
                     return
             self.positions.append(position)
+            # Log new position
+            self.logger.log_position_update(position)
         elif isinstance(self.positions, dict):
             # Handle as a dictionary (using symbol as key)
             symbol = position.get('symbol')
             if symbol:
                 self.positions[symbol] = position
+                # Log position update
+                self.logger.log_position_update(position)
         else:
             # Initialize as a list if it's neither
             self.positions = [position]
+            # Log new position
+            self.logger.log_position_update(position)
     
     def get_performance_metrics(self) -> Dict[str, Any]:
         """

@@ -6,10 +6,12 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 import uuid
+import os
 
 from ..core.strategy import Strategy
 from ..data.data_provider import DataProvider
 from ..utils.types import Signal, Trade, Position, Bar
+from ..utils.logger import StrategyLogger
 
 
 class BacktestEngine:
@@ -23,7 +25,12 @@ class BacktestEngine:
         data_provider: DataProvider,
         initial_capital: float = 100000.0,
         commission: float = 0.0,
-        slippage: float = 0.0
+        slippage: float = 0.0,
+        log_level: str = "INFO",
+        log_to_console: bool = True,
+        log_to_file: bool = True,
+        log_dir: str = "logs",
+        verbose: bool = False
     ):
         """
         Initialize the backtest engine.
@@ -34,6 +41,11 @@ class BacktestEngine:
             initial_capital: Initial capital for the backtest
             commission: Commission rate (as a decimal, e.g., 0.001 for 0.1%)
             slippage: Slippage rate (as a decimal, e.g., 0.001 for 0.1%)
+            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
+            log_to_console: Whether to log to console
+            log_to_file: Whether to log to file
+            log_dir: Directory to store log files
+            verbose: Whether to log verbose messages
         """
         self.strategy = strategy
         self.data_provider = data_provider
@@ -51,6 +63,16 @@ class BacktestEngine:
         self.trades = []
         self.equity_curve = []
         self.performance_metrics = {}
+        
+        # Initialize logger
+        self.logger = StrategyLogger(
+            strategy_name=f"Backtest_{strategy.name}",
+            level=log_level,
+            log_to_console=log_to_console,
+            log_to_file=log_to_file,
+            log_dir=log_dir,
+            verbose=verbose
+        )
     
     def run(
         self,
@@ -74,20 +96,27 @@ class BacktestEngine:
         if end_date is None:
             end_date = datetime.now()
         
+        self.logger.info(f"Starting backtest for {symbols} from {start_date.date()} to {end_date.date()}")
+        self.logger.info(f"Initial capital: ${self.initial_capital:,.2f}, Commission: {self.commission*100:.2f}%, Slippage: {self.slippage*100:.2f}%")
+        
         # Get historical data for all symbols
         data = {}
         for symbol in symbols:
             try:
+                self.logger.debug(f"Fetching data for {symbol}...")
                 symbol_data = self.data_provider.get_historical_data(
                     symbol, start_date, end_date, interval
                 )
                 data[symbol] = symbol_data
+                self.logger.debug(f"Got {len(symbol_data)} data points for {symbol}")
             except Exception as e:
-                print(f"Error fetching data for {symbol}: {str(e)}")
+                self.logger.error(f"Error fetching data for {symbol}: {str(e)}")
                 continue
         
         if not data:
-            raise ValueError("No data available for any of the provided symbols")
+            error_msg = "No data available for any of the provided symbols"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
         
         # Combine data and sort by date
         all_data = []
@@ -96,6 +125,7 @@ class BacktestEngine:
             all_data.append(symbol_data)
         
         combined_data = pd.concat(all_data).sort_values('date')
+        self.logger.info(f"Combined data: {len(combined_data)} bars")
         
         # Initialize backtest state
         self.portfolio = {
@@ -107,22 +137,29 @@ class BacktestEngine:
         self.equity_curve = []
         
         # Run the backtest
+        self.logger.info("Running backtest...")
+        bar_count = 0
         for _, row in combined_data.iterrows():
             try:
                 self._process_bar(row)
+                bar_count += 1
+                if bar_count % 1000 == 0:
+                    self.logger.debug(f"Processed {bar_count} bars")
             except Exception as e:
                 import traceback
-                print(f"Error processing bar: {str(e)}")
-                print(f"Row type: {type(row)}")
-                print(f"Row contents: {row}")
-                print("\nFull error traceback:")
+                self.logger.error(f"Error processing bar: {str(e)}")
+                self.logger.error(f"Row type: {type(row)}")
+                self.logger.error(f"Row contents: {row}")
+                self.logger.error("Full error traceback:")
                 traceback.print_exc()
                 raise
         
         # Calculate performance metrics
+        self.logger.info("Calculating performance metrics...")
         self._calculate_performance_metrics()
         
-        return {
+        # Log results
+        result = {
             'initial_capital': self.initial_capital,
             'final_equity': self.portfolio['equity'],
             'total_return': (self.portfolio['equity'] - self.initial_capital) / self.initial_capital,
@@ -130,6 +167,10 @@ class BacktestEngine:
             'equity_curve': self.equity_curve,
             'performance_metrics': self.performance_metrics
         }
+        
+        self.logger.log_backtest_result(result)
+        
+        return result
     
     def _process_bar(self, bar_data: pd.Series) -> None:
         """
@@ -145,7 +186,7 @@ class BacktestEngine:
             if len(symbol_values) > 0:
                 symbol = symbol_values[0]
             else:
-                print("Warning: Could not determine symbol from MultiIndex")
+                self.logger.warning("Could not determine symbol from MultiIndex")
                 return
             
             # Extract data values
@@ -179,7 +220,7 @@ class BacktestEngine:
                 
                 # Check if we have all required values
                 if None in [date_value, open_value, high_value, low_value, close_value, volume_value]:
-                    print(f"Warning: Missing data for {symbol}")
+                    self.logger.warning(f"Missing data for {symbol}")
                     return
                 
                 bar = {
@@ -192,7 +233,7 @@ class BacktestEngine:
                     'volume': volume_value
                 }
             except Exception as e:
-                print(f"Warning: Error extracting data for {symbol}: {str(e)}")
+                self.logger.warning(f"Error extracting data for {symbol}: {str(e)}")
                 return
         else:
             # Regular Series
@@ -215,8 +256,8 @@ class BacktestEngine:
                     
                     # If we still don't have a symbol, we can't process this bar
                     if symbol is None:
-                        print("Warning: Could not determine symbol from data")
-                        print(f"Data: {bar_data}")
+                        self.logger.warning("Could not determine symbol from data")
+                        self.logger.warning(f"Data: {bar_data}")
                         return
                     
                     # Get timestamp/date
@@ -226,7 +267,7 @@ class BacktestEngine:
                     elif 'date' in bar_data:
                         timestamp = bar_data['date']
                     else:
-                        print("Warning: No timestamp or date found in data")
+                        self.logger.warning("No timestamp or date found in data")
                         return
                     
                     # Create bar dictionary with additional error handling
@@ -241,8 +282,8 @@ class BacktestEngine:
                             'volume': float(bar_data['volume'])
                         }
                     except (TypeError, ValueError) as e:
-                        print(f"Error converting data values: {str(e)}")
-                        print(f"Data types: open={type(bar_data['open'])}, high={type(bar_data['high'])}, low={type(bar_data['low'])}, close={type(bar_data['close'])}, volume={type(bar_data['volume'])}")
+                        self.logger.warning(f"Error converting data values: {str(e)}")
+                        self.logger.warning(f"Data types: open={type(bar_data['open'])}, high={type(bar_data['high'])}, low={type(bar_data['low'])}, close={type(bar_data['close'])}, volume={type(bar_data['volume'])}")
                         
                         # Try alternative access method for pandas Series
                         try:
@@ -256,7 +297,7 @@ class BacktestEngine:
                                 'volume': float(bar_data.volume)
                             }
                         except Exception as e2:
-                            print(f"Alternative access method also failed: {str(e2)}")
+                            self.logger.warning(f"Alternative access method also failed: {str(e2)}")
                             raise ValueError(f"Could not process bar data: {str(e)} / {str(e2)}")
                 else:
                     # Dictionary-like structure
@@ -272,12 +313,12 @@ class BacktestEngine:
                         'volume': bar_data['volume']
                     }
             except KeyError as e:
-                print(f"Warning: Missing data: {e}")
-                print(f"Available columns: {bar_data.index.tolist() if isinstance(bar_data, pd.Series) else list(bar_data.keys())}")
+                self.logger.warning(f"Missing data: {e}")
+                self.logger.warning(f"Available columns: {bar_data.index.tolist() if isinstance(bar_data, pd.Series) else list(bar_data.keys())}")
                 return
             except Exception as e:
-                print(f"Warning: Error processing bar: {str(e)}")
-                print(f"Data: {bar_data}")
+                self.logger.warning(f"Error processing bar: {str(e)}")
+                self.logger.warning(f"Data: {bar_data}")
                 return
         
         # Update positions with current prices

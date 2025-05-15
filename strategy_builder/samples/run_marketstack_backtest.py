@@ -16,12 +16,13 @@ from strategy_builder.samples.moving_average_crossover import MovingAverageCross
 from strategy_builder.backtesting.engine import BacktestEngine
 
 
-def run_marketstack_backtest(api_key=None):
+def run_marketstack_backtest(api_key=None, verbose=False):
     """
     Run a backtest of the Moving Average Crossover strategy using MarketStack data
     
     Args:
         api_key: MarketStack API key (optional, can be loaded from environment)
+        verbose: Whether to print verbose debug information
     """
     # Load environment variables from .env file if api_key is not provided
     if api_key is None:
@@ -36,22 +37,26 @@ def run_marketstack_backtest(api_key=None):
         cache_ttl=3600   # Cache data for 1 hour
     )
     
-    # Create a strategy
+    # Create a strategy with logging
     strategy = MovingAverageCrossover(
         fast_period=20,
         slow_period=50,
         risk_per_trade=0.02,
         stop_loss=0.03,
-        take_profit=0.06
+        take_profit=0.06,
+        log_level="DEBUG" if verbose else "INFO",
+        verbose=verbose
     )
     
-    # Create a backtest engine
+    # Create a backtest engine with logging
     engine = BacktestEngine(
         strategy=strategy,
         data_provider=data_provider,
         initial_capital=100000.0,
         commission=0.001,  # 0.1% commission
-        slippage=0.001     # 0.1% slippage
+        slippage=0.001,    # 0.1% slippage
+        log_level="DEBUG" if verbose else "INFO",
+        verbose=verbose
     )
     
     # Define backtest parameters
@@ -149,25 +154,32 @@ def plot_equity_curve(equity_curve):
 
 
 if __name__ == "__main__":
-    # Check if API key is provided as command line argument
-    if len(sys.argv) > 1:
-        api_key = sys.argv[1]
-        run_marketstack_backtest(api_key)
-    else:
+    import argparse
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Run a backtest using MarketStack data')
+    parser.add_argument('--api-key', help='MarketStack API key')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
+    args = parser.parse_args()
+    
+    # Get API key from command line or environment
+    api_key = args.api_key
+    if not api_key:
         # Load environment variables from .env file
         load_dotenv()
-        
-        # Check if API key is provided in .env file or environment variable
         api_key = os.environ.get("MARKETSTACK_API_KEY")
-        if not api_key:
-            print("Please provide a MarketStack API key as a command line argument or set the MARKETSTACK_API_KEY environment variable")
-            print("Example:")
-            print("  python -m strategy_builder.samples.run_marketstack_backtest YOUR_API_KEY")
-            print("  # OR")
-            print("  Add MARKETSTACK_API_KEY=your-api-key to your .env file")
-            print("  # OR")
-            print("  export MARKETSTACK_API_KEY='your-api-key'")
-            print("  python -m strategy_builder.samples.run_marketstack_backtest")
-            sys.exit(1)
-        
-        run_marketstack_backtest(api_key)
+    
+    # Check if API key is available
+    if not api_key:
+        print("Please provide a MarketStack API key using --api-key or set the MARKETSTACK_API_KEY environment variable")
+        print("Example:")
+        print("  python -m strategy_builder.samples.run_marketstack_backtest --api-key YOUR_API_KEY")
+        print("  # OR")
+        print("  Add MARKETSTACK_API_KEY=your-api-key to your .env file")
+        print("  # OR")
+        print("  export MARKETSTACK_API_KEY='your-api-key'")
+        print("  python -m strategy_builder.samples.run_marketstack_backtest")
+        sys.exit(1)
+    
+    # Run the backtest
+    run_marketstack_backtest(api_key, verbose=args.verbose)
