@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from strategy_builder.data.alpaca_data_provider import AlpacaDataProvider
-from strategy_builder.samples.moving_average_crossover import MovingAverageCrossover
+from strategy_builder.strategies.moving_average_crossover import MovingAverageCrossover  # Changed 'samples' to 'strategies'
 from strategy_builder.backtesting.engine import BacktestEngine
 
 

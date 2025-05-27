@@ -1,62 +1,52 @@
 """
-Sample script to run a backtest using MarketStack data
+Sample script to run a backtest using Alpaca data
 """
 import os
 import sys
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 
 # Add the parent directory to the path so we can import the strategy_builder package
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from strategy_builder.data.marketstack_data_provider import MarketstackDataProvider
-from strategy_builder.samples.moving_average_crossover import MovingAverageCrossover
+from strategy_builder.data.alpaca_data_provider import AlpacaDataProvider
+from strategy_builder.strategies.moving_average_crossover import MovingAverageCrossover  # Changed 'samples' to 'strategies'
 from strategy_builder.backtesting.engine import BacktestEngine
 
 
-def run_marketstack_backtest(api_key=None, verbose=False):
+def run_alpaca_backtest(api_key, api_secret):
     """
-    Run a backtest of the Moving Average Crossover strategy using MarketStack data
+    Run a backtest of the Moving Average Crossover strategy using Alpaca data
     
     Args:
-        api_key: MarketStack API key (optional, can be loaded from environment)
-        verbose: Whether to print verbose debug information
+        api_key: Alpaca API key
+        api_secret: Alpaca API secret
     """
-    # Load environment variables from .env file if api_key is not provided
-    if api_key is None:
-        load_dotenv()
-        api_key = os.environ.get("MARKETSTACK_API_KEY")
-    
     # Create a data provider
-    data_provider = MarketstackDataProvider(
+    data_provider = AlpacaDataProvider(
         api_key=api_key,
-        use_https=True,
-        use_cache=True,  # Enable caching to reduce API usage
-        cache_ttl=3600   # Cache data for 1 hour
+        api_secret=api_secret,
+        base_url="https://paper-api.alpaca.markets",  # Use paper trading API
+        data_feed="iex"  # Use IEX data feed (free)
     )
     
-    # Create a strategy with logging
+    # Create a strategy
     strategy = MovingAverageCrossover(
         fast_period=20,
         slow_period=50,
         risk_per_trade=0.02,
         stop_loss=0.03,
-        take_profit=0.06,
-        log_level="DEBUG" if verbose else "INFO",
-        verbose=verbose
+        take_profit=0.06
     )
     
-    # Create a backtest engine with logging
+    # Create a backtest engine
     engine = BacktestEngine(
         strategy=strategy,
         data_provider=data_provider,
         initial_capital=100000.0,
         commission=0.001,  # 0.1% commission
-        slippage=0.001,    # 0.1% slippage
-        log_level="DEBUG" if verbose else "INFO",
-        verbose=verbose
+        slippage=0.001     # 0.1% slippage
     )
     
     # Define backtest parameters
@@ -69,10 +59,7 @@ def run_marketstack_backtest(api_key=None, verbose=False):
     try:
         results = engine.run(symbols, start_date, end_date, interval="1d")
     except Exception as e:
-        import traceback
         print(f"Error running backtest: {str(e)}")
-        print("\nFull error traceback:")
-        traceback.print_exc()
         return None
     
     # Print results if available
@@ -127,8 +114,8 @@ def plot_equity_curve(equity_curve):
         plt.tight_layout()
         
         # Save the plot
-        plt.savefig('marketstack_equity_curve.png')
-        print("\nEquity curve saved as 'marketstack_equity_curve.png'")
+        plt.savefig('alpaca_equity_curve.png')
+        print("\nEquity curve saved as 'alpaca_equity_curve.png'")
         
         return
     
@@ -146,40 +133,23 @@ def plot_equity_curve(equity_curve):
     plt.tight_layout()
     
     # Save the plot
-    plt.savefig('marketstack_equity_curve.png')
-    print("\nEquity curve saved as 'marketstack_equity_curve.png'")
+    plt.savefig('alpaca_equity_curve.png')
+    print("\nEquity curve saved as 'alpaca_equity_curve.png'")
     
     # Show the plot
     plt.show()
 
 
 if __name__ == "__main__":
-    import argparse
+    # Check if API key and secret are provided as environment variables
+    api_key = os.environ.get("ALPACA_API_KEY")
+    api_secret = os.environ.get("ALPACA_API_SECRET")
     
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Run a backtest using MarketStack data')
-    parser.add_argument('--api-key', help='MarketStack API key')
-    parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
-    args = parser.parse_args()
-    
-    # Get API key from command line or environment
-    api_key = args.api_key
-    if not api_key:
-        # Load environment variables from .env file
-        load_dotenv()
-        api_key = os.environ.get("MARKETSTACK_API_KEY")
-    
-    # Check if API key is available
-    if not api_key:
-        print("Please provide a MarketStack API key using --api-key or set the MARKETSTACK_API_KEY environment variable")
+    if not api_key or not api_secret:
+        print("Please set ALPACA_API_KEY and ALPACA_API_SECRET environment variables")
         print("Example:")
-        print("  python -m strategy_builder.samples.run_marketstack_backtest --api-key YOUR_API_KEY")
-        print("  # OR")
-        print("  Add MARKETSTACK_API_KEY=your-api-key to your .env file")
-        print("  # OR")
-        print("  export MARKETSTACK_API_KEY='your-api-key'")
-        print("  python -m strategy_builder.samples.run_marketstack_backtest")
+        print("  export ALPACA_API_KEY='your-api-key'")
+        print("  export ALPACA_API_SECRET='your-api-secret'")
         sys.exit(1)
     
-    # Run the backtest
-    run_marketstack_backtest(api_key, verbose=args.verbose)
+    run_alpaca_backtest(api_key, api_secret)
