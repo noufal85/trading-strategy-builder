@@ -11,6 +11,7 @@ Usage:
 Example:
     python run_daily_scan.py --config custom_config.json --stocks AAPL,MSFT,GOOGL
     python run_daily_scan.py --trend-method linear_regression --output both
+    python run_daily_scan.py --show-all-analysis --generate-html-report
 """
 
 import argparse
@@ -41,11 +42,23 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Basic usage
   python run_daily_scan.py
+  
+  # Custom stock list
   python run_daily_scan.py --stocks AAPL,MSFT,GOOGL,AMZN,TSLA
-  python run_daily_scan.py --trend-method linear_regression
-  python run_daily_scan.py --analysis-days 7 --volume-threshold 1.5
-  python run_daily_scan.py --output both --output-file my_results.csv
+  
+  # Enhanced analysis with detailed output
+  python run_daily_scan.py --show-all-analysis
+  
+  # Generate HTML report with charts
+  python run_daily_scan.py --generate-html-report
+  
+  # Full analysis with custom parameters
+  python run_daily_scan.py --show-all-analysis --generate-html-report --trend-method linear_regression
+  
+  # Custom reports folder
+  python run_daily_scan.py --generate-html-report --reports-folder ./my_reports
         """
     )
     
@@ -125,6 +138,26 @@ Examples:
         '--detailed-output',
         action='store_true',
         help='Include detailed metrics in output'
+    )
+    
+    # Enhanced reporting options
+    parser.add_argument(
+        '--show-all-analysis',
+        action='store_true',
+        help='Show detailed analysis for ALL stocks (not just qualifiers) with failure reasons'
+    )
+    
+    parser.add_argument(
+        '--generate-html-report',
+        action='store_true',
+        help='Generate comprehensive HTML report with charts and individual stock pages'
+    )
+    
+    parser.add_argument(
+        '--reports-folder',
+        type=str,
+        default='reports',
+        help='Folder for HTML reports (default: reports)'
     )
     
     # Logging
@@ -208,7 +241,7 @@ def build_stock_list(args) -> List[str]:
         return get_stock_list(args.stock_list)
 
 
-def print_configuration(config: Dict[str, Any], stock_list: List[str]):
+def print_configuration(config: Dict[str, Any], stock_list: List[str], args):
     """Print the current configuration."""
     print("=" * 60)
     print("TREND FOLLOWING SCANNER CONFIGURATION")
@@ -224,6 +257,13 @@ def print_configuration(config: Dict[str, Any], stock_list: List[str]):
         print(f"Output File: {config['output_file']}")
     print(f"Log Level: {config['log_level']}")
     print(f"Stocks to Analyze: {len(stock_list)} ({', '.join(stock_list[:5])}{'...' if len(stock_list) > 5 else ''})")
+    
+    # Enhanced reporting options
+    if args.show_all_analysis:
+        print(f"Enhanced Analysis: ✅ Show detailed analysis for ALL stocks")
+    if args.generate_html_report:
+        print(f"HTML Report: ✅ Generate in folder '{args.reports_folder}'")
+    
     print("=" * 60)
     print()
 
@@ -243,12 +283,22 @@ def main():
         sys.exit(1)
     
     # Print configuration
-    print_configuration(config, stock_list)
+    print_configuration(config, stock_list, args)
     
     # Dry run mode - just show configuration
     if args.dry_run:
         print("Dry run mode - configuration shown above. Exiting without execution.")
         return
+    
+    # Check for matplotlib if HTML report is requested
+    if args.generate_html_report:
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            print("Warning: matplotlib is required for HTML report generation.")
+            print("Install it with: pip install matplotlib")
+            print("Continuing without HTML report generation...")
+            args.generate_html_report = False
     
     try:
         # Initialize and run the strategy
@@ -260,23 +310,41 @@ def main():
         )
         
         print("Starting daily screening process...")
-        results = strategy.run_daily_screening()
+        
+        # Run with enhanced options
+        results = strategy.run_daily_screening(
+            show_all_analysis=args.show_all_analysis,
+            generate_html_report=args.generate_html_report,
+            reports_folder=args.reports_folder
+        )
         
         # Summary
-        print(f"\nScreening completed successfully!")
-        print(f"Analyzed {len(stock_list)} stocks")
-        print(f"Found {len(results)} stocks meeting trend following criteria")
+        print(f"\n{'='*60}")
+        print(f"📊 SCREENING SUMMARY")
+        print(f"{'='*60}")
+        print(f"✅ Analyzed: {len(stock_list)} stocks")
+        print(f"🎯 Qualified: {len(results)} stocks meeting trend following criteria")
         
         if results:
             qualifying_symbols = [result['symbol'] for result in results]
-            print(f"Qualifying stocks: {', '.join(qualifying_symbols)}")
+            print(f"🔥 Qualifying stocks: {', '.join(qualifying_symbols)}")
+        else:
+            print("❌ No stocks currently meet the trend following criteria")
+            if not args.show_all_analysis:
+                print("💡 Use --show-all-analysis to see why stocks failed")
+        
+        # Report information
+        if args.generate_html_report:
+            print(f"📄 HTML report generated in: {args.reports_folder}/")
+        
+        print(f"{'='*60}")
         
     except KeyboardInterrupt:
         print("\nScreening interrupted by user.")
         sys.exit(1)
     except Exception as e:
         print(f"\nError during screening: {str(e)}")
-        if args.log_level == 'DEBUG':
+        if config.get('log_level') == 'DEBUG':
             import traceback
             traceback.print_exc()
         sys.exit(1)

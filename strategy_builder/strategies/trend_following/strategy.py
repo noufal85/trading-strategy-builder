@@ -23,6 +23,7 @@ from strategy_builder.data.fmp_data_provider import FMPDataProvider
 from strategy_builder.utils.types import Signal
 from trend_analyzer import SimpleTrendAnalyzer, LinearRegressionTrendAnalyzer, VolumeAnalyzer
 from config import get_config, validate_config, get_stock_list
+from html_report_generator import HTMLReportGenerator
 
 
 class TrendFollowingStrategy(Strategy):
@@ -71,6 +72,7 @@ class TrendFollowingStrategy(Strategy):
         
         # Results storage
         self.screening_results = []
+        self.all_results = []  # Store all results for enhanced reporting
         
         self.logger.info(f"Initialized {self.name}")
         self.logger.info(f"Configuration: {self.config}")
@@ -100,10 +102,20 @@ class TrendFollowingStrategy(Strategy):
             analysis_days=self.config['analysis_days']
         )
     
-    def run_daily_screening(self) -> List[Dict[str, Any]]:
+    def run_daily_screening(
+        self,
+        show_all_analysis: bool = False,
+        generate_html_report: bool = False,
+        reports_folder: str = "reports"
+    ) -> List[Dict[str, Any]]:
         """
-        Run the daily stock screening process.
+        Run the daily stock screening process with enhanced reporting.
         
+        Args:
+            show_all_analysis: Show analysis for all stocks, not just qualifiers
+            generate_html_report: Generate HTML report
+            reports_folder: Folder for HTML reports
+            
         Returns:
             List of dictionaries containing screening results for qualifying stocks
         """
@@ -115,6 +127,7 @@ class TrendFollowingStrategy(Strategy):
         start_date = end_date - timedelta(days=self.config['volume_avg_days'] + 10)
         
         qualifying_stocks = []
+        all_results = []
         total_analyzed = 0
         
         for symbol in self.stock_list:
@@ -135,6 +148,13 @@ class TrendFollowingStrategy(Strategy):
                 # Analyze the stock
                 result = self.analyze_stock(symbol, data)
                 
+                # Store historical data for charts
+                if generate_html_report:
+                    result['historical_data'] = data
+                
+                # Add to all results
+                all_results.append(result)
+                
                 if result['qualifies']:
                     qualifying_stocks.append(result)
                     self.logger.info(f"✓ {symbol} qualifies for trend following")
@@ -148,14 +168,23 @@ class TrendFollowingStrategy(Strategy):
                 continue
         
         self.screening_results = qualifying_stocks
+        self.all_results = all_results
         
         self.logger.info(
             f"Screening complete. {len(qualifying_stocks)} out of {total_analyzed} "
             f"stocks qualify for trend following."
         )
         
-        # Output results
-        self._output_results(qualifying_stocks)
+        # Enhanced output with detailed analysis
+        if show_all_analysis:
+            self._print_detailed_analysis(all_results)
+        else:
+            # Standard output for qualifying stocks only
+            self._output_results(qualifying_stocks)
+        
+        # Generate HTML report if requested
+        if generate_html_report:
+            self._generate_html_report(all_results, reports_folder)
         
         return qualifying_stocks
     
@@ -209,6 +238,155 @@ class TrendFollowingStrategy(Strategy):
         }
         
         return result
+    
+    def _print_detailed_analysis(self, all_results: List[Dict[str, Any]]):
+        """Print detailed analysis for all stocks."""
+        print(f"\n{'='*80}")
+        print(f"DETAILED TREND FOLLOWING ANALYSIS - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"{'='*80}")
+        
+        # Summary statistics
+        total_stocks = len(all_results)
+        qualified_stocks = len([r for r in all_results if r['qualifies']])
+        
+        print(f"📊 Summary: {qualified_stocks}/{total_stocks} stocks qualified ({(qualified_stocks/total_stocks*100) if total_stocks > 0 else 0:.1f}%)")
+        print(f"{'='*80}")
+        
+        # Sort by trend strength for better readability
+        sorted_results = sorted(all_results, key=lambda x: x['trend_strength'], reverse=True)
+        
+        for result in sorted_results:
+            symbol = result['symbol']
+            price = result['current_price']
+            trend_details = result.get('trend_details', {})
+            volume_details = result.get('volume_details', {})
+            
+            # Status indicator
+            status_emoji = "✅" if result['qualifies'] else "❌"
+            status_text = "QUALIFIED" if result['qualifies'] else "FAILED"
+            
+            print(f"\n{status_emoji} {symbol} - ${price:.2f} - {status_text}")
+            
+            # Trend analysis
+            slope = trend_details.get('relative_slope', 0)
+            slope_pass = slope >= self.config['min_slope']
+            positive_days = trend_details.get('positive_days', 0)
+            total_days = trend_details.get('total_days', 0)
+            positive_days_pass = positive_days >= self.config['min_positive_days']
+            ma_pass = trend_details.get('above_moving_average', False)
+            
+            print(f"   📈 Trend: slope={slope:.3f} ({'✅' if slope_pass else '❌'} need ≥{self.config['min_slope']:.3f}) | " +
+                  f"positive_days={positive_days}/{total_days} ({'✅' if positive_days_pass else '❌'} need ≥{self.config['min_positive_days']})")
+            
+            # Volume analysis
+            volume_ratio = volume_details.get('volume_ratio', 0)
+            volume_pass = volume_ratio >= self.config['volume_threshold']
+            
+            print(f"   📊 Volume: {volume_ratio:.2f}x average ({'✅' if volume_pass else '❌'} need ≥{self.config['volume_threshold']:.2f}x)")
+            
+            # Moving average
+            current_price = result['current_price']
+            ma_price = trend_details.get('moving_average', 0)
+            print(f"   📊 Above MA: ${current_price:.2f} > ${ma_price:.2f} ({'✅' if ma_pass else '❌'})")
+            
+            # Overall score
+            criteria_passed = sum([slope_pass, positive_days_pass, ma_pass, volume_pass])
+            print(f"   📋 Score: {criteria_passed}/4 criteria passed")
+            
+            # Failure reasons for non-qualifying stocks
+            if not result['qualifies']:
+                reasons = self._get_failure_reasons(result)
+                if reasons:
+                    print(f"   ❌ Failure reasons: {'; '.join(reasons)}")
+        
+        print(f"\n{'='*80}")
+        
+        # Failure pattern analysis
+        self._print_failure_analysis(all_results)
+    
+    def _get_failure_reasons(self, result: Dict[str, Any]) -> List[str]:
+        """Get specific failure reasons for a stock."""
+        if result['qualifies']:
+            return []
+        
+        reasons = []
+        trend_details = result.get('trend_details', {})
+        volume_details = result.get('volume_details', {})
+        
+        # Check trend criteria
+        if trend_details.get('relative_slope', 0) < self.config['min_slope']:
+            reasons.append(f"Slope too low ({trend_details.get('relative_slope', 0):.3f})")
+        
+        if trend_details.get('positive_days', 0) < self.config['min_positive_days']:
+            reasons.append(f"Not enough positive days ({trend_details.get('positive_days', 0)})")
+        
+        if not trend_details.get('above_moving_average', False):
+            reasons.append("Below moving average")
+        
+        # Check volume criteria
+        if volume_details.get('volume_ratio', 0) < self.config['volume_threshold']:
+            reasons.append(f"Volume too low ({volume_details.get('volume_ratio', 0):.2f}x)")
+        
+        return reasons
+    
+    def _print_failure_analysis(self, all_results: List[Dict[str, Any]]):
+        """Print analysis of failure patterns."""
+        failed_results = [r for r in all_results if not r['qualifies']]
+        if not failed_results:
+            return
+        
+        print(f"📊 FAILURE PATTERN ANALYSIS")
+        print(f"{'='*40}")
+        
+        # Count failure reasons
+        failure_counts = {
+            'slope_too_low': 0,
+            'insufficient_positive_days': 0,
+            'below_moving_average': 0,
+            'low_volume': 0
+        }
+        
+        for result in failed_results:
+            trend_details = result.get('trend_details', {})
+            volume_details = result.get('volume_details', {})
+            
+            if trend_details.get('relative_slope', 0) < self.config['min_slope']:
+                failure_counts['slope_too_low'] += 1
+            
+            if trend_details.get('positive_days', 0) < self.config['min_positive_days']:
+                failure_counts['insufficient_positive_days'] += 1
+            
+            if not trend_details.get('above_moving_average', False):
+                failure_counts['below_moving_average'] += 1
+            
+            if volume_details.get('volume_ratio', 0) < self.config['volume_threshold']:
+                failure_counts['low_volume'] += 1
+        
+        total_failed = len(failed_results)
+        
+        print(f"🔻 Price Slope Too Low: {failure_counts['slope_too_low']} stocks ({failure_counts['slope_too_low']/total_failed*100:.1f}%)")
+        print(f"📉 Not Enough Positive Days: {failure_counts['insufficient_positive_days']} stocks ({failure_counts['insufficient_positive_days']/total_failed*100:.1f}%)")
+        print(f"📊 Below Moving Average: {failure_counts['below_moving_average']} stocks ({failure_counts['below_moving_average']/total_failed*100:.1f}%)")
+        print(f"📊 Volume Too Low: {failure_counts['low_volume']} stocks ({failure_counts['low_volume']/total_failed*100:.1f}%)")
+        print(f"{'='*40}")
+    
+    def _generate_html_report(self, all_results: List[Dict[str, Any]], reports_folder: str):
+        """Generate HTML report with charts and detailed analysis."""
+        try:
+            html_generator = HTMLReportGenerator(reports_folder)
+            
+            # Create summary statistics
+            summary = {
+                'total_analyzed': len(all_results),
+                'qualified': len([r for r in all_results if r['qualifies']]),
+                'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+            html_generator.generate_report(all_results, self.config, summary)
+            
+        except Exception as e:
+            self.logger.error(f"Error generating HTML report: {str(e)}")
+            print(f"Warning: Could not generate HTML report: {str(e)}")
     
     def _output_results(self, results: List[Dict[str, Any]]):
         """Output screening results based on configuration."""

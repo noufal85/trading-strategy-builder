@@ -93,3 +93,13 @@ dmypy.json
 
 # Project specific
 equity_curve.png
+
+# Generated logs and reports
+*.log
+logs/
+*/logs/
+reports/
+*/reports/
+*.html
+*_trades_*.csv
+*.png
