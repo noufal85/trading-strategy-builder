@@ -14,6 +14,9 @@ import matplotlib.dates as mdates
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class HTMLReportGenerator:
@@ -21,13 +24,15 @@ class HTMLReportGenerator:
     Generates timestamped HTML reports for trend following analysis.
     """
     
-    def __init__(self, base_reports_folder: str = "reports"):
+    def __init__(self, base_reports_folder: str = None):
         """
         Initialize the HTML report generator.
         
         Args:
-            base_reports_folder: Base folder for all reports
+            base_reports_folder: Base folder for all reports - defaults to REPORTS_DIR env var or 'reports'
         """
+        if base_reports_folder is None:
+            base_reports_folder = os.getenv('REPORTS_DIR', 'reports')
         self.base_reports_folder = base_reports_folder
         self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.report_folder = os.path.join(base_reports_folder, self.timestamp)

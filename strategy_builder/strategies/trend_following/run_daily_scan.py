@@ -156,8 +156,8 @@ Examples:
     parser.add_argument(
         '--reports-folder',
         type=str,
-        default='reports',
-        help='Folder for HTML reports (default: reports)'
+        default=None,
+        help='Folder for HTML reports (default: REPORTS_DIR env var or "reports")'
     )
     
     # Logging
@@ -262,7 +262,8 @@ def print_configuration(config: Dict[str, Any], stock_list: List[str], args):
     if args.show_all_analysis:
         print(f"Enhanced Analysis: ✅ Show detailed analysis for ALL stocks")
     if args.generate_html_report:
-        print(f"HTML Report: ✅ Generate in folder '{args.reports_folder}'")
+        reports_folder = args.reports_folder or os.getenv('REPORTS_DIR', 'reports')
+        print(f"HTML Report: ✅ Generate in folder '{reports_folder}'")
     
     print("=" * 60)
     print()
@@ -311,11 +312,16 @@ def main():
         
         print("Starting daily screening process...")
         
+        # Get reports folder from environment if not specified
+        reports_folder = args.reports_folder
+        if reports_folder is None:
+            reports_folder = os.getenv('REPORTS_DIR', 'reports')
+        
         # Run with enhanced options
         results = strategy.run_daily_screening(
             show_all_analysis=args.show_all_analysis,
             generate_html_report=args.generate_html_report,
-            reports_folder=args.reports_folder
+            reports_folder=reports_folder
         )
         
         # Summary
@@ -335,7 +341,7 @@ def main():
         
         # Report information
         if args.generate_html_report:
-            print(f"📄 HTML report generated in: {args.reports_folder}/")
+            print(f"📄 HTML report generated in: {reports_folder}/")
         
         print(f"{'='*60}")
         

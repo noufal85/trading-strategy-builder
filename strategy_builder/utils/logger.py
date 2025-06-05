@@ -6,6 +6,9 @@ import csv
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Union
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class StrategyLogger:
@@ -26,10 +29,10 @@ class StrategyLogger:
     def __init__(
         self,
         strategy_name: str,
-        level: str = 'INFO',
-        log_to_console: bool = True,
-        log_to_file: bool = True,
-        log_dir: str = 'logs',
+        level: str = None,
+        log_to_console: bool = None,
+        log_to_file: bool = None,
+        log_dir: str = None,
         verbose: bool = False
     ):
         """
@@ -37,16 +40,28 @@ class StrategyLogger:
         
         Args:
             strategy_name: Name of the strategy
-            level: Log level (DEBUG, INFO, WARNING, ERROR)
-            log_to_console: Whether to log to console
-            log_to_file: Whether to log to file
-            log_dir: Directory to store log files
+            level: Log level (DEBUG, INFO, WARNING, ERROR) - defaults to LOG_LEVEL env var or 'INFO'
+            log_to_console: Whether to log to console - defaults to LOG_TO_CONSOLE env var or True
+            log_to_file: Whether to log to file - defaults to LOG_TO_FILE env var or True
+            log_dir: Directory to store log files - defaults to LOGS_DIR env var or 'logs'
             verbose: Whether to log verbose messages
         """
         self.strategy_name = strategy_name
+        
+        # Use environment variables as defaults if parameters not provided
+        if level is None:
+            level = os.getenv('LOG_LEVEL', 'INFO')
+        if log_to_console is None:
+            log_to_console = os.getenv('LOG_TO_CONSOLE', 'true').lower() == 'true'
+        if log_to_file is None:
+            log_to_file = os.getenv('LOG_TO_FILE', 'true').lower() == 'true'
+        if log_dir is None:
+            log_dir = os.getenv('LOGS_DIR', 'logs')
+        
         self.level = self.LEVELS.get(level.upper(), logging.INFO)
         self.log_to_console = log_to_console
         self.log_to_file = log_to_file
+        self.log_dir = log_dir
         self.verbose = verbose
         
         # Create logger
