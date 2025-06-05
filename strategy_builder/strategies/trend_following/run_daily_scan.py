@@ -150,7 +150,8 @@ Examples:
     parser.add_argument(
         '--generate-html-report',
         action='store_true',
-        help='Generate comprehensive HTML report with charts and individual stock pages'
+        default=True,
+        help='Generate comprehensive HTML report with charts and individual stock pages (enabled by default)'
     )
     
     parser.add_argument(
