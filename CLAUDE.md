@@ -51,8 +51,12 @@ pip install -r requirements.txt
 
 # 3. Install FMP package manually (choose one option):
 
-# Option A: From GitHub (requires GitHub PAT token for private repos)
-pip install git+https://github.com/noufal85/fmp.git
+# Option A: From GitHub using environment variable PAT token (private repo)
+export GITHUB_PERSONAL_ACCESS_TOKEN=your_personal_access_token
+pip install git+https://${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com/noufal85/fmp.git
+
+# Option A2: From GitHub using inline PAT token (private repo)
+pip install git+https://your_token@github.com/noufal85/fmp.git
 
 # Option B: From local directory (for development environments)
 pip install -e /home/noufal/automation/fmp
@@ -68,15 +72,19 @@ cp .env.sample .env
 # Edit .env file with your API credentials (especially FMP_API_KEY)
 ```
 
-### GitHub PAT Token Setup (for GitHub installation)
-If installing FMP from GitHub, you may need to configure authentication:
+### GitHub PAT Token Setup (for private repository installation)
+If installing FMP from GitHub private repository, you have several authentication options:
 ```bash
-# Method 1: Using git credentials
-git config --global credential.helper store
-echo 'https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com' >> ~/.git-credentials
+# Method 1: Using environment variable (recommended)
+export GITHUB_PERSONAL_ACCESS_TOKEN=your_personal_access_token
+pip install git+https://${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com/noufal85/fmp.git
 
 # Method 2: Using pip with token directly
-pip install git+https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com/noufal85/fmp.git
+pip install git+https://your_token@github.com/noufal85/fmp.git
+
+# Method 3: Using git credentials (persistent)
+git config --global credential.helper store
+echo 'https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com' >> ~/.git-credentials
 ```
 
 ### Package Installation

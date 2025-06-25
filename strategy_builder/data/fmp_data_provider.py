@@ -13,9 +13,10 @@ try:
 except ImportError as e:
     raise ImportError(
         "FMP package not found. Please install it manually:\n"
-        "  pip install git+https://github.com/noufal85/fmp.git\n"
-        "  OR\n"
-        "  pip install -e /path/to/local/fmp\n"
+        "  Option 1: export GITHUB_PERSONAL_ACCESS_TOKEN=your_token\n"
+        "            pip install git+https://${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com/noufal85/fmp.git\n"
+        "  Option 2: pip install git+https://your_token@github.com/noufal85/fmp.git\n"
+        "  Option 3: pip install -e /path/to/local/fmp\n"
         "\nSee requirements.txt for detailed installation instructions.\n"
         f"Original error: {e}"
     )

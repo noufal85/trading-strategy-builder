@@ -7,17 +7,21 @@ alpaca-trade-api>=3.0.0  # For live trading integration
 python-dotenv>=0.19.0  # For loading environment variables
 
 # ============================================================================
-# MANUAL INSTALLATION REQUIRED: FMP Package
+# MANUAL INSTALLATION REQUIRED: FMP Package (Private Repository)
 # ============================================================================
 # The FMP (Financial Modeling Prep) package must be installed manually:
 #
-# Option 1: Install from GitHub (requires GitHub PAT token for private repos)
-#   pip install git+https://github.com/noufal85/fmp.git
+# Option 1: Install from GitHub using environment variable PAT token
+#   export GITHUB_PERSONAL_ACCESS_TOKEN=your_personal_access_token
+#   pip install git+https://${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com/noufal85/fmp.git
 #
-# Option 2: Install from local directory (for development environments)
+# Option 2: Install from GitHub using inline PAT token
+#   pip install git+https://your_token@github.com/noufal85/fmp.git
+#
+# Option 3: Install from local directory (for development environments)
 #   pip install -e /path/to/local/fmp
 #
-# Option 3: If you have access to the FMP package locally
+# Option 4: If you have access to the FMP package locally
 #   pip install -e /home/noufal/automation/fmp
 #
 # Note: After installing FMP, make sure to set FMP_API_KEY in your .env file

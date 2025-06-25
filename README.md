@@ -39,10 +39,14 @@ This repository contains a framework for building, testing, and backtesting trad
 
 4. **Install FMP package** (choose one option):
    ```bash
-   # Option A: From GitHub (may require PAT token)
-   pip install git+https://github.com/noufal85/fmp.git
+   # Option A: From GitHub using environment variable PAT token (private repo)
+   export GITHUB_PERSONAL_ACCESS_TOKEN=your_personal_access_token
+   pip install git+https://${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com/noufal85/fmp.git
    
-   # Option B: From local directory
+   # Option B: From GitHub using inline PAT token (private repo)
+   pip install git+https://your_token@github.com/noufal85/fmp.git
+   
+   # Option C: From local directory
    pip install -e /path/to/local/fmp
    ```
 
@@ -57,9 +61,14 @@ This repository contains a framework for building, testing, and backtesting trad
    # Edit .env file with your API keys (especially FMP_API_KEY)
    ```
 
-#### GitHub PAT Token Setup (if needed)
-If you need to install FMP from GitHub and encounter authentication issues:
+#### GitHub PAT Token Setup (for private repository)
+If you need to install FMP from GitHub private repository:
 ```bash
+# Method 1: Using environment variable (recommended)
+export GITHUB_PERSONAL_ACCESS_TOKEN=your_personal_access_token
+pip install git+https://${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com/noufal85/fmp.git
+
+# Method 2: Using git credentials (persistent)
 git config --global credential.helper store
 echo 'https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com' >> ~/.git-credentials
 ```

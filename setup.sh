@@ -44,12 +44,13 @@ if pip install -e /home/noufal/automation/fmp 2>/dev/null; then
     echo "✅ FMP package installed from local directory"
 else
     echo "⚠️  Local FMP not found. You'll need to install it manually:"
-    echo "   Option 1: pip install git+https://github.com/noufal85/fmp.git"
-    echo "   Option 2: pip install -e /path/to/your/fmp"
-    echo ""
-    echo "   If using GitHub, you may need to configure PAT token:"
-    echo "   git config --global credential.helper store"
-    echo "   echo 'https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com' >> ~/.git-credentials"
+    echo "   Option 1: Using environment variable PAT token (recommended):"
+    echo "     export GITHUB_PERSONAL_ACCESS_TOKEN=your_token"
+    echo "     pip install git+https://\${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com/noufal85/fmp.git"
+    echo "   Option 2: Using inline PAT token:"
+    echo "     pip install git+https://your_token@github.com/noufal85/fmp.git"
+    echo "   Option 3: From local directory:"
+    echo "     pip install -e /path/to/your/fmp"
 fi
 
 # Install package in development mode
