@@ -27,12 +27,19 @@ load_dotenv()
 # Add paths for direct imports
 current_dir = os.path.dirname(__file__)
 parent_dir = os.path.join(current_dir, '..', '..')
+root_dir = os.path.join(current_dir, '..', '..', '..')
 sys.path.insert(0, current_dir)
 sys.path.insert(0, parent_dir)
+sys.path.insert(0, root_dir)
 
-# Direct imports to avoid package conflicts
-from strategy import TrendFollowingStrategy
-from config import get_config, get_stock_list, DEFAULT_CONFIG
+# Try package imports first, then fall back to direct imports
+try:
+    from strategy_builder.strategies.trend_following.strategy import TrendFollowingStrategy
+    from strategy_builder.strategies.trend_following.config import get_config, get_stock_list, DEFAULT_CONFIG
+except ImportError:
+    # Fall back to direct imports
+    from strategy import TrendFollowingStrategy
+    from config import get_config, get_stock_list, DEFAULT_CONFIG
 
 
 def parse_arguments():

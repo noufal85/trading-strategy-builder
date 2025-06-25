@@ -5,3 +5,6 @@ yfinance>=0.1.70
 websockets>=9.0,<11.0  # Compatible with alpaca-trade-api
 alpaca-trade-api>=3.0.0  # For live trading integration
 python-dotenv>=0.19.0  # For loading environment variables
+
+# FMP (Financial Modeling Prep) API client
+git+https://github.com/noufal85/fmp.git

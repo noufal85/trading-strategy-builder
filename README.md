@@ -20,15 +20,45 @@ This repository contains a framework for building, testing, and backtesting trad
 
 ### Installation
 
+#### Quick Setup (Recommended)
+```bash
+# Clone the repository
+git clone https://github.com/noufal85/trading-strategy-builder.git
+cd trading-strategy-builder
+
+# Run automated setup script
+./setup.sh
+```
+
+#### Manual Setup
 1. Clone the repository:
-   ```
+   ```bash
    git clone https://github.com/noufal85/trading-strategy-builder.git
    cd trading-strategy-builder
    ```
 
-2. Install the required dependencies:
+2. Create and activate virtual environment:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
    ```
+
+3. **Configure GitHub PAT Token** (if needed for FMP package):
+   ```bash
+   git config --global credential.helper store
+   echo 'https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com' >> ~/.git-credentials
+   ```
+
+4. Install dependencies:
+   ```bash
    pip install -r requirements.txt
+   pip install -e .
+   ```
+
+5. Setup environment variables:
+   ```bash
+   cp .env.sample .env
+   # Edit .env file with your API keys
    ```
 
 ### Usage

@@ -41,13 +41,48 @@ python -m strategy_builder.strategies.moving_average_crossover.run_marketstack_b
 ```
 
 ### Environment Setup
+
+#### Option 1: Standard Installation (Recommended)
 ```bash
-# Install dependencies
+# 1. Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 2. Configure GitHub PAT token for FMP package installation (if needed)
+# Note: If you get authentication errors when installing from requirements.txt, 
+# configure your GitHub Personal Access Token:
+# git config --global credential.helper store
+# echo "https://YOUR_GITHUB_USERNAME:YOUR_PAT_TOKEN@github.com" >> ~/.git-credentials
+
+# 3. Install all dependencies (including FMP package from GitHub)
 pip install -r requirements.txt
 
-# Copy environment template and configure API keys
+# 4. Install the main package in development mode
+pip install -e .
+
+# 5. Copy environment template and configure API keys
 cp .env.sample .env
-# Edit .env file with your API credentials
+# Edit .env file with your API credentials (especially FMP_API_KEY)
+```
+
+#### Option 2: Local Development Installation
+```bash
+# 1. Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 2. Install dependencies without FMP package
+pip install numpy pandas matplotlib yfinance websockets alpaca-trade-api python-dotenv
+
+# 3. Install FMP package from local directory (for development)
+pip install -e /home/noufal/automation/fmp
+
+# 4. Install the main package in development mode
+pip install -e .
+
+# 5. Copy environment template and configure API keys
+cp .env.sample .env
+# Edit .env file with your API credentials (especially FMP_API_KEY)
 ```
 
 ### Package Installation

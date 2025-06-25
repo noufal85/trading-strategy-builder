@@ -10,8 +10,15 @@ import pandas as pd
 
 try:
     from fmp import FMPClient, StockPrice
-except ImportError:
-    raise ImportError("FMP package not found. Please install it using: pip install git+https://github.com/noufal85/fmp.git")
+except ImportError as e:
+    raise ImportError(
+        "FMP package not found. Please install dependencies using:\n"
+        "  pip install -r requirements.txt\n"
+        "\nIf you get authentication errors, configure your GitHub PAT token:\n"
+        "  git config --global credential.helper store\n"
+        "  echo 'https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com' >> ~/.git-credentials\n"
+        f"\nOriginal error: {e}"
+    )
 
 from .data_provider import DataProvider
 from ..utils.types import Bar
