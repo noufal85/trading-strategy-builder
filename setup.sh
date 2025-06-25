@@ -43,14 +43,18 @@ echo "ℹ️  Trying local installation first..."
 if pip install -e /home/noufal/automation/fmp 2>/dev/null; then
     echo "✅ FMP package installed from local directory"
 else
-    echo "⚠️  Local FMP not found. You'll need to install it manually:"
-    echo "   Option 1: Using environment variable PAT token (recommended):"
-    echo "     export GITHUB_PERSONAL_ACCESS_TOKEN=your_token"
-    echo "     pip install git+https://\${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com/noufal85/fmp.git"
-    echo "   Option 2: Using inline PAT token:"
-    echo "     pip install git+https://your_token@github.com/noufal85/fmp.git"
-    echo "   Option 3: From local directory:"
-    echo "     pip install -e /path/to/your/fmp"
+    echo "ℹ️  Local FMP not found. Trying SSH clone method..."
+    if git clone git@github.com:noufal85/fmp.git 2>/dev/null && cd fmp && pip install . && cd .. && rm -rf fmp; then
+        echo "✅ FMP package installed from GitHub via SSH"
+    else
+        echo "⚠️  Automatic installation failed. You'll need to install it manually:"
+        echo "   Option 1: Using SSH clone (recommended):"
+        echo "     git clone git@github.com:noufal85/fmp.git && cd fmp && pip install . && cd .. && rm -rf fmp"
+        echo "   Option 2: Using PAT token:"
+        echo "     pip install git+https://your_token@github.com/noufal85/fmp.git"
+        echo "   Option 3: From local directory:"
+        echo "     pip install -e /path/to/your/fmp"
+    fi
 fi
 
 # Install package in development mode

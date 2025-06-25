@@ -11,11 +11,10 @@ python-dotenv>=0.19.0  # For loading environment variables
 # ============================================================================
 # The FMP (Financial Modeling Prep) package must be installed manually:
 #
-# Option 1: Install from GitHub using environment variable PAT token
-#   export GITHUB_PERSONAL_ACCESS_TOKEN=your_personal_access_token
-#   pip install git+https://${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com/noufal85/fmp.git
+# Option 1: Install from GitHub using SSH (recommended for systems with SSH keys)
+#   git clone git@github.com:noufal85/fmp.git && cd fmp && pip install . && cd .. && rm -rf fmp
 #
-# Option 2: Install from GitHub using inline PAT token
+# Option 2: Install from GitHub using PAT token with pip (if SSH not configured)
 #   pip install git+https://your_token@github.com/noufal85/fmp.git
 #
 # Option 3: Install from local directory (for development environments)
