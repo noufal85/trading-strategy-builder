@@ -41,21 +41,24 @@ python -m strategy_builder.strategies.moving_average_crossover.run_marketstack_b
 ```
 
 ### Environment Setup
-
-#### Option 1: Standard Installation (Recommended)
 ```bash
 # 1. Create and activate virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# 2. Configure GitHub PAT token for FMP package installation (if needed)
-# Note: If you get authentication errors when installing from requirements.txt, 
-# configure your GitHub Personal Access Token:
-# git config --global credential.helper store
-# echo "https://YOUR_GITHUB_USERNAME:YOUR_PAT_TOKEN@github.com" >> ~/.git-credentials
-
-# 3. Install all dependencies (including FMP package from GitHub)
+# 2. Install core dependencies
 pip install -r requirements.txt
+
+# 3. Install FMP package manually (choose one option):
+
+# Option A: From GitHub (requires GitHub PAT token for private repos)
+pip install git+https://github.com/noufal85/fmp.git
+
+# Option B: From local directory (for development environments)
+pip install -e /home/noufal/automation/fmp
+
+# Option C: From any local path
+pip install -e /path/to/your/fmp
 
 # 4. Install the main package in development mode
 pip install -e .
@@ -65,24 +68,15 @@ cp .env.sample .env
 # Edit .env file with your API credentials (especially FMP_API_KEY)
 ```
 
-#### Option 2: Local Development Installation
+### GitHub PAT Token Setup (for GitHub installation)
+If installing FMP from GitHub, you may need to configure authentication:
 ```bash
-# 1. Create and activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
+# Method 1: Using git credentials
+git config --global credential.helper store
+echo 'https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com' >> ~/.git-credentials
 
-# 2. Install dependencies without FMP package
-pip install numpy pandas matplotlib yfinance websockets alpaca-trade-api python-dotenv
-
-# 3. Install FMP package from local directory (for development)
-pip install -e /home/noufal/automation/fmp
-
-# 4. Install the main package in development mode
-pip install -e .
-
-# 5. Copy environment template and configure API keys
-cp .env.sample .env
-# Edit .env file with your API credentials (especially FMP_API_KEY)
+# Method 2: Using pip with token directly
+pip install git+https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com/noufal85/fmp.git
 ```
 
 ### Package Installation

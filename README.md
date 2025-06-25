@@ -20,17 +20,6 @@ This repository contains a framework for building, testing, and backtesting trad
 
 ### Installation
 
-#### Quick Setup (Recommended)
-```bash
-# Clone the repository
-git clone https://github.com/noufal85/trading-strategy-builder.git
-cd trading-strategy-builder
-
-# Run automated setup script
-./setup.sh
-```
-
-#### Manual Setup
 1. Clone the repository:
    ```bash
    git clone https://github.com/noufal85/trading-strategy-builder.git
@@ -43,23 +32,37 @@ cd trading-strategy-builder
    source .venv/bin/activate
    ```
 
-3. **Configure GitHub PAT Token** (if needed for FMP package):
-   ```bash
-   git config --global credential.helper store
-   echo 'https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com' >> ~/.git-credentials
-   ```
-
-4. Install dependencies:
+3. Install core dependencies:
    ```bash
    pip install -r requirements.txt
+   ```
+
+4. **Install FMP package** (choose one option):
+   ```bash
+   # Option A: From GitHub (may require PAT token)
+   pip install git+https://github.com/noufal85/fmp.git
+   
+   # Option B: From local directory
+   pip install -e /path/to/local/fmp
+   ```
+
+5. Install the main package:
+   ```bash
    pip install -e .
    ```
 
-5. Setup environment variables:
+6. Setup environment variables:
    ```bash
    cp .env.sample .env
-   # Edit .env file with your API keys
+   # Edit .env file with your API keys (especially FMP_API_KEY)
    ```
+
+#### GitHub PAT Token Setup (if needed)
+If you need to install FMP from GitHub and encounter authentication issues:
+```bash
+git config --global credential.helper store
+echo 'https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com' >> ~/.git-credentials
+```
 
 ### Usage
 

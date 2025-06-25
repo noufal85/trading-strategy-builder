@@ -28,15 +28,28 @@ else
     echo "✅ .env file already exists"
 fi
 
-# Install dependencies
-echo "📚 Installing dependencies..."
+# Install core dependencies
+echo "📚 Installing core dependencies..."
 if pip install -r requirements.txt; then
-    echo "✅ Dependencies installed successfully"
+    echo "✅ Core dependencies installed successfully"
 else
-    echo "❌ Failed to install dependencies. You may need to configure GitHub PAT token:"
+    echo "❌ Failed to install core dependencies"
+    exit 1
+fi
+
+# Install FMP package
+echo "📦 Installing FMP package..."
+echo "ℹ️  Trying local installation first..."
+if pip install -e /home/noufal/automation/fmp 2>/dev/null; then
+    echo "✅ FMP package installed from local directory"
+else
+    echo "⚠️  Local FMP not found. You'll need to install it manually:"
+    echo "   Option 1: pip install git+https://github.com/noufal85/fmp.git"
+    echo "   Option 2: pip install -e /path/to/your/fmp"
+    echo ""
+    echo "   If using GitHub, you may need to configure PAT token:"
     echo "   git config --global credential.helper store"
     echo "   echo 'https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com' >> ~/.git-credentials"
-    exit 1
 fi
 
 # Install package in development mode

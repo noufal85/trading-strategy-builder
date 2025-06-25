@@ -12,12 +12,12 @@ try:
     from fmp import FMPClient, StockPrice
 except ImportError as e:
     raise ImportError(
-        "FMP package not found. Please install dependencies using:\n"
-        "  pip install -r requirements.txt\n"
-        "\nIf you get authentication errors, configure your GitHub PAT token:\n"
-        "  git config --global credential.helper store\n"
-        "  echo 'https://YOUR_USERNAME:YOUR_PAT_TOKEN@github.com' >> ~/.git-credentials\n"
-        f"\nOriginal error: {e}"
+        "FMP package not found. Please install it manually:\n"
+        "  pip install git+https://github.com/noufal85/fmp.git\n"
+        "  OR\n"
+        "  pip install -e /path/to/local/fmp\n"
+        "\nSee requirements.txt for detailed installation instructions.\n"
+        f"Original error: {e}"
     )
 
 from .data_provider import DataProvider
