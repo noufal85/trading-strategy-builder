@@ -1,5 +1,5 @@
 """
-Sample script to run a backtest using MarketStack data
+Sample script to run a backtest using FMP data
 """
 import os
 import sys
@@ -11,31 +11,26 @@ from dotenv import load_dotenv
 # Add the parent directory to the path so we can import the strategy_builder package
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from strategy_builder.data.marketstack_data_provider import MarketstackDataProvider
+from strategy_builder.data.fmp_data_provider import FMPDataProvider
 from strategy_builder.strategies.moving_average_crossover import MovingAverageCrossover  # Changed 'samples' to 'strategies'
 from strategy_builder.backtesting.engine import BacktestEngine
 
 
-def run_marketstack_backtest(api_key=None, verbose=False):
+def run_fmp_backtest(api_key=None, verbose=False):
     """
-    Run a backtest of the Moving Average Crossover strategy using MarketStack data
+    Run a backtest of the Moving Average Crossover strategy using FMP data
     
     Args:
-        api_key: MarketStack API key (optional, can be loaded from environment)
+        api_key: FMP API key (optional, can be loaded from environment)
         verbose: Whether to print verbose debug information
     """
     # Load environment variables from .env file if api_key is not provided
     if api_key is None:
         load_dotenv()
-        api_key = os.environ.get("MARKETSTACK_API_KEY")
+        api_key = os.environ.get("FMP_API_KEY")
     
     # Create a data provider
-    data_provider = MarketstackDataProvider(
-        api_key=api_key,
-        use_https=True,
-        use_cache=True,  # Enable caching to reduce API usage
-        cache_ttl=3600   # Cache data for 1 hour
-    )
+    data_provider = FMPDataProvider(api_key=api_key)
     
     # Create a strategy with logging
     strategy = MovingAverageCrossover(
@@ -127,8 +122,8 @@ def plot_equity_curve(equity_curve):
         plt.tight_layout()
         
         # Save the plot
-        plt.savefig('marketstack_equity_curve.png')
-        print("\nEquity curve saved as 'marketstack_equity_curve.png'")
+        plt.savefig('fmp_equity_curve.png')
+        print("\nEquity curve saved as 'fmp_equity_curve.png'")
         
         return
     
@@ -146,8 +141,8 @@ def plot_equity_curve(equity_curve):
     plt.tight_layout()
     
     # Save the plot
-    plt.savefig('marketstack_equity_curve.png')
-    print("\nEquity curve saved as 'marketstack_equity_curve.png'")
+    plt.savefig('fmp_equity_curve.png')
+    print("\nEquity curve saved as 'fmp_equity_curve.png'")
     
     # Show the plot
     plt.show()
@@ -157,8 +152,8 @@ if __name__ == "__main__":
     import argparse
     
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Run a backtest using MarketStack data')
-    parser.add_argument('--api-key', help='MarketStack API key')
+    parser = argparse.ArgumentParser(description='Run a backtest using FMP data')
+    parser.add_argument('--api-key', help='FMP API key')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     args = parser.parse_args()
     
@@ -167,19 +162,19 @@ if __name__ == "__main__":
     if not api_key:
         # Load environment variables from .env file
         load_dotenv()
-        api_key = os.environ.get("MARKETSTACK_API_KEY")
+        api_key = os.environ.get("FMP_API_KEY")
     
     # Check if API key is available
     if not api_key:
-        print("Please provide a MarketStack API key using --api-key or set the MARKETSTACK_API_KEY environment variable")
+        print("Please provide an FMP API key using --api-key or set the FMP_API_KEY environment variable")
         print("Example:")
-        print("  python -m strategy_builder.samples.run_marketstack_backtest --api-key YOUR_API_KEY")
+        print("  python -m strategy_builder.samples.run_fmp_backtest --api-key YOUR_API_KEY")
         print("  # OR")
-        print("  Add MARKETSTACK_API_KEY=your-api-key to your .env file")
+        print("  Add FMP_API_KEY=your-api-key to your .env file")
         print("  # OR")
-        print("  export MARKETSTACK_API_KEY='your-api-key'")
-        print("  python -m strategy_builder.samples.run_marketstack_backtest")
+        print("  export FMP_API_KEY='your-api-key'")
+        print("  python -m strategy_builder.samples.run_fmp_backtest")
         sys.exit(1)
     
     # Run the backtest
-    run_marketstack_backtest(api_key, verbose=args.verbose)
+    run_fmp_backtest(api_key, verbose=args.verbose)

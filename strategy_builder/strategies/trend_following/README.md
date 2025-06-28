@@ -6,9 +6,10 @@ A comprehensive trend following strategy implementation that screens stocks for 
 
 - **Pluggable Trend Analysis**: Multiple trend detection methods (Simple and Linear Regression)
 - **Volume Analysis**: Screens for above-average volume patterns
+- **52-Week High/Low Analysis**: Shows current price position relative to yearly range
 - **Configurable Parameters**: Fully customizable analysis parameters
-- **FMP Integration**: Uses your personal FMP package for reliable market data
-- **Multiple Output Formats**: Console and CSV output options
+- **FMP Integration**: Uses Financial Modeling Prep API for reliable market data
+- **Multiple Output Formats**: Console, CSV, and HTML report options
 - **Comprehensive Logging**: Detailed logging and analysis results
 
 ## Installation
@@ -146,6 +147,20 @@ The strategy analyzes volume patterns to ensure institutional interest:
 - **Recent Volume**: Compare last N days vs baseline
 - **Volume Threshold**: Require volume above threshold (default 120%)
 
+## 52-Week High/Low Analysis
+
+The strategy now includes 52-week high/low analysis for each stock:
+
+- **52-Week High**: The highest price in the last 252 trading days
+- **52-Week Low**: The lowest price in the last 252 trading days
+- **Position Indicators**: Shows percentage distance from both high and low
+- **Trading Context**: Helps identify stocks near breakout levels or in strong trends
+
+Example interpretation:
+- **Near 52W High** (-5% to 0%): Stock showing strength, potential breakout
+- **Mid-Range** (-20% to -40% from high): Normal trading range
+- **Near 52W Low** (0% to +20% from low): Potential reversal or value opportunity
+
 ## Stock Lists
 
 ### Popular Stocks (Default)
@@ -206,23 +221,26 @@ TREND FOLLOWING SCREENING RESULTS - 2025-01-15 09:30:00
 Found 3 qualifying stocks:
 
 🔥 AAPL - $185.50
+   52W High: $199.23 (-6.9%) | 52W Low: $155.98 (+19.0%)
    Trend Strength: 0.85 | Volume Strength: 0.92
    Price Slope: 0.023 (2.3%/day)
-   Positive Days: 4/4
+   Positive Days: 4/5
    Volume Ratio: 1.84x average
    Current Volume: 89,234,567
 
 🔥 MSFT - $420.75
+   52W High: $442.15 (-4.8%) | 52W Low: $366.65 (+14.8%)
    Trend Strength: 0.78 | Volume Strength: 0.88
    Price Slope: 0.018 (1.8%/day)
-   Positive Days: 3/4
+   Positive Days: 3/5
    Volume Ratio: 1.76x average
    Current Volume: 45,123,890
 
 🔥 NVDA - $875.25
+   52W High: $974.94 (-10.2%) | 52W Low: $410.22 (+113.4%)
    Trend Strength: 0.92 | Volume Strength: 0.95
    Price Slope: 0.035 (3.5%/day)
-   Positive Days: 5/4
+   Positive Days: 5/5
    Volume Ratio: 1.90x average
    Current Volume: 78,456,123
 

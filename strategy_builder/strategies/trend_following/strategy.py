@@ -123,8 +123,8 @@ class TrendFollowingStrategy(Strategy):
         
         # Calculate date range for data fetching
         end_date = datetime.now()
-        # Fetch extra days to ensure we have enough data for volume analysis
-        start_date = end_date - timedelta(days=self.config['volume_avg_days'] + 10)
+        # Fetch 1 year of data to calculate 52-week high/low
+        start_date = end_date - timedelta(days=365)
         
         qualifying_stocks = []
         all_results = []
@@ -213,14 +213,31 @@ class TrendFollowingStrategy(Strategy):
         
         # Get current price data
         latest_data = data.iloc[-1]
+        current_price = float(latest_data['close'])
+        
+        # Calculate 52-week high and low
+        # Get the last 252 trading days (approximately 1 year)
+        one_year_data = data.tail(252) if len(data) >= 252 else data
+        week_52_high = float(one_year_data['high'].max())
+        week_52_low = float(one_year_data['low'].min())
+        
+        # Calculate percentage from 52-week high and low
+        pct_from_high = ((current_price - week_52_high) / week_52_high * 100) if week_52_high > 0 else 0
+        pct_from_low = ((current_price - week_52_low) / week_52_low * 100) if week_52_low > 0 else 0
         
         # Compile results
         result = {
             'symbol': symbol,
             'qualifies': qualifies,
             'analysis_date': datetime.now().strftime('%Y-%m-%d'),
-            'current_price': float(latest_data['close']),
+            'current_price': current_price,
             'current_volume': int(latest_data['volume']),
+            
+            # 52-week high/low data
+            'week_52_high': week_52_high,
+            'week_52_low': week_52_low,
+            'pct_from_high': pct_from_high,
+            'pct_from_low': pct_from_low,
             
             # Trend analysis results
             'is_trending_up': trend_result['is_trending_up'],
@@ -416,6 +433,7 @@ class TrendFollowingStrategy(Strategy):
             volume_strength = result['volume_strength']
             
             print(f"🔥 {symbol} - ${price:.2f}")
+            print(f"   52W High: ${result['week_52_high']:.2f} ({result['pct_from_high']:+.1f}%) | 52W Low: ${result['week_52_low']:.2f} ({result['pct_from_low']:+.1f}%)")
             print(f"   Trend Strength: {trend_strength:.2f} | Volume Strength: {volume_strength:.2f}")
             
             if self.config['detailed_output']:

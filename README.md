@@ -121,26 +121,20 @@ This requires Alpaca API credentials:
    ```
 4. Run the script to fetch data from Alpaca and run the backtest
 
-#### Using MarketStack Data
+#### Using FMP Data
 
 ```
-python -m strategy_builder.samples.run_marketstack_backtest
+python -m strategy_builder.samples.run_fmp_backtest
 ```
 
-This requires a MarketStack API key:
-1. Sign up for a MarketStack account at https://marketstack.com/
-2. Get your API key from the MarketStack dashboard
+This requires an FMP API key:
+1. Sign up for an FMP account at https://financialmodelingprep.com/
+2. Get your API key from the FMP dashboard
 3. Set environment variables in your `.env` file:
    ```
-   MARKETSTACK_API_KEY=your-api-key
+   FMP_API_KEY=your-api-key
    ```
-4. Optionally, configure additional MarketStack settings:
-   ```
-   MARKETSTACK_USE_HTTPS=true
-   MARKETSTACK_USE_CACHE=true
-   MARKETSTACK_CACHE_TTL=3600
-   ```
-5. Run the script to fetch data from MarketStack and run the backtest
+4. Run the script to fetch data from FMP and run the backtest
 
 ## Creating Your Own Strategy
 
@@ -217,6 +211,6 @@ This repository is updated periodically with the following process:
 - yfinance (for Yahoo Finance data)
 - alpaca-trade-api (for Alpaca Markets data)
 - python-dotenv (for environment variable management)
-- MarketStack API client (for MarketStack data)
+- FMP package (for Financial Modeling Prep data - installed separately)
 
 See `requirements.txt` for specific version requirements.

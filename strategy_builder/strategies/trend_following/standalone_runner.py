@@ -273,15 +273,30 @@ def analyze_stock(symbol, data, trend_analyzer, volume_analyzer):
     # Get current price data
     latest_data = data.iloc[-1]
     
+    # Calculate 52-week high and low
+    # Get the last 252 trading days (approximately 1 year)
+    one_year_data = data.tail(252) if len(data) >= 252 else data
+    week_52_high = float(one_year_data['high'].max())
+    week_52_low = float(one_year_data['low'].min())
+    
+    # Calculate percentage from 52-week high and low
+    current_price = float(latest_data['close'])
+    pct_from_high = ((current_price - week_52_high) / week_52_high * 100) if week_52_high > 0 else 0
+    pct_from_low = ((current_price - week_52_low) / week_52_low * 100) if week_52_low > 0 else 0
+    
     return {
         'symbol': symbol,
         'qualifies': qualifies,
-        'current_price': float(latest_data['close']),
+        'current_price': current_price,
         'current_volume': int(latest_data['volume']),
         'trend_strength': trend_result['trend_strength'],
         'volume_strength': volume_result['volume_strength'],
         'trend_details': trend_result['trend_details'],
-        'volume_details': volume_result['volume_details']
+        'volume_details': volume_result['volume_details'],
+        'week_52_high': week_52_high,
+        'week_52_low': week_52_low,
+        'pct_from_high': pct_from_high,
+        'pct_from_low': pct_from_low
     }
 
 
@@ -303,6 +318,7 @@ def print_results(results):
         volume_strength = result['volume_strength']
         
         print(f"🔥 {symbol} - ${price:.2f}")
+        print(f"   52W High: ${result['week_52_high']:.2f} ({result['pct_from_high']:+.1f}%) | 52W Low: ${result['week_52_low']:.2f} ({result['pct_from_low']:+.1f}%)")
         print(f"   Trend Strength: {trend_strength:.2f} | Volume Strength: {volume_strength:.2f}")
         
         trend_details = result['trend_details']
@@ -370,7 +386,7 @@ def main():
         
         # Calculate date range
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=30)  # Get 30 days of data
+        start_date = end_date - timedelta(days=365)  # Get 1 year of data for 52-week high/low
         
         qualifying_stocks = []
         
