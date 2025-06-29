@@ -7,6 +7,9 @@ from typing import List, Dict, Any
 
 # Default configuration for the trend following strategy
 DEFAULT_CONFIG = {
+    # Configuration identification
+    'config_name': 'default',       # Human-readable name for this configuration
+    
     # Data analysis parameters
     'analysis_days': 5,              # Number of recent days to analyze for trend
     'volume_avg_days': 20,           # Days to calculate average volume baseline

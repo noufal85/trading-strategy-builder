@@ -229,7 +229,9 @@ class TrendFollowingStrategy(Strategy):
         result = {
             'symbol': symbol,
             'qualifies': qualifies,
+            'config_name': self.config.get('config_name', 'default'),
             'analysis_date': datetime.now().strftime('%Y-%m-%d'),
+            'analysis_timestamp': datetime.now(),
             'current_price': current_price,
             'current_volume': int(latest_data['volume']),
             
