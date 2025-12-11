@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from typing import Optional, List, Dict, Any, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from stock_data_web.tradier import TradierClient
@@ -147,7 +147,7 @@ class OrderManager:
             f"poll={poll_interval}s)"
         )
 
-    def check_buying_power(self, required_amount: float) -> tuple[bool, float]:
+    def check_buying_power(self, required_amount: float) -> Tuple[bool, float]:
         """Check if sufficient buying power is available.
 
         Args:
