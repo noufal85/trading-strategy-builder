@@ -1,0 +1,96 @@
+# Docker Compose for Gap Trading Realtime Monitor
+# Run with: docker-compose -f docker-compose.monitor.yml up -d
+
+version: '3.8'
+
+services:
+  gap-trading-monitor:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.monitor
+    container_name: gap_trading_monitor
+    restart: unless-stopped
+
+    environment:
+      # Tradier API credentials
+      - TRADIER_API_KEY=${TRADIER_API_KEY}
+      - TRADIER_ACCOUNT_ID=${TRADIER_ACCOUNT_ID}
+      - TRADIER_SANDBOX=${TRADIER_SANDBOX:-true}
+
+      # FMP API for quotes (optional, falls back to Tradier)
+      - FMP_API_KEY=${FMP_API_KEY:-}
+
+      # Database connection
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/timescaledb
+
+      # Monitor configuration
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-60}
+      - EOD_CLOSE_TIME=${EOD_CLOSE_TIME:-15:55}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+      # Telegram notifications (optional)
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+
+    volumes:
+      # Mount packages for development
+      - ../:/app/trading-strategy-builder:ro
+      - ../../stock_data_web:/app/stock_data_web:ro
+      - ../../fmp:/app/fmp:ro
+
+      # Logs volume
+      - monitor_logs:/app/logs
+
+    networks:
+      - gap_trading_network
+
+    depends_on:
+      - timescaledb
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; r=requests.get('http://localhost:8080/health'); exit(0 if r.ok else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # TimescaleDB service (reference existing or create)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: gap_trading_timescaledb
+    restart: unless-stopped
+
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=timescaledb
+
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ../../airflow/timescaledb/init:/docker-entrypoint-initdb.d:ro
+
+    ports:
+      - "5432:5432"
+
+    networks:
+      - gap_trading_network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  monitor_logs:
+  timescaledb_data:
+
+networks:
+  gap_trading_network:
+    driver: bridge

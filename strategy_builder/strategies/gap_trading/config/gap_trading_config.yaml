@@ -1,0 +1,260 @@
+# Gap Trading Strategy Configuration
+# Created: 2025-12-09
+# Updated: 2025-12-09
+#
+# This configuration file contains all parameters for the gap trading strategy.
+# Sensitive values (API keys, tokens) should be stored in Airflow connections,
+# not in this file.
+
+# =============================================================================
+# UNIVERSE CONFIGURATION
+# Stock selection criteria and permanent watchlist
+# =============================================================================
+universe:
+  # Permanent symbols - always included in universe regardless of screening
+  permanent_symbols:
+    - SPY   # S&P 500 ETF
+    - QQQ   # Nasdaq 100 ETF
+    - DIA   # Dow Jones Industrial ETF
+    - IWM   # Russell 2000 ETF
+    - GLD   # Gold ETF
+    - USO   # Oil ETF
+    - TLT   # 20+ Year Treasury Bond ETF
+
+  # Reference symbols - tracked but not traded (for market context)
+  reference_symbols:
+    - VIX   # Volatility Index
+
+  # Screening criteria for dynamic stock selection
+  screening:
+    min_market_cap: 1000000000      # $1B minimum market cap
+    min_avg_volume: 100000          # 100K shares daily average
+    min_dollar_volume: 20000000     # $20M daily dollar volume
+    min_price: 10.0                 # Minimum stock price
+    max_price: 500.0                # Maximum stock price
+    max_stocks: 100                 # Maximum stocks in universe (excluding permanent)
+
+  # Universe update schedule
+  update_schedule:
+    day_of_week: sunday             # Day to run universe update
+    time_et: "18:00"                # Time in Eastern Time
+
+# =============================================================================
+# GAP DETECTION CONFIGURATION
+# Parameters for identifying significant gaps at market open
+# =============================================================================
+gap_detection:
+  # Minimum gap threshold to consider
+  min_gap_pct: 1.5                  # 1.5% minimum gap size
+
+  # Maximum gap threshold (avoid extreme gaps that may revert)
+  max_gap_pct: 10.0                 # 10% maximum gap size
+
+  # Gap confirmation settings
+  confirmation:
+    enabled: true                   # Require gap confirmation
+    time_et: "09:40"                # Time to check confirmation (10 min after open)
+    # Gap UP confirmed if price_at_940 > open_price
+    # Gap DOWN confirmed if price_at_940 < open_price
+
+  # Gap direction filtering
+  trade_gap_up: true                # Trade gap up (LONG)
+  trade_gap_down: true              # Trade gap down (SHORT)
+
+# =============================================================================
+# VOLATILITY CONFIGURATION
+# ATR, ADR, and volatility calculation parameters
+# =============================================================================
+volatility:
+  # ATR (Average True Range) settings
+  atr_period: 14                    # 14-day ATR calculation
+
+  # ADR (Average Daily Range) settings
+  adr_period: 20                    # 20-day ADR calculation
+
+  # Standard deviation volatility
+  volatility_period_short: 20       # 20-day volatility
+  volatility_period_long: 60        # 60-day volatility
+
+  # Beta calculation
+  beta_period: 60                   # 60-day beta vs SPY
+  beta_benchmark: SPY               # Benchmark symbol for beta
+
+  # Risk tier classification based on ATR %
+  risk_tiers:
+    low:
+      max_atr_pct: 2.0              # ATR% < 2% = LOW risk
+      position_multiplier: 1.0      # 100% of base position size
+      stop_atr_multiplier: 1.0      # Stop at 1.0 x ATR
+    medium:
+      min_atr_pct: 2.0              # ATR% >= 2%
+      max_atr_pct: 4.0              # ATR% < 4% = MEDIUM risk
+      position_multiplier: 0.75     # 75% of base position size
+      stop_atr_multiplier: 1.5      # Stop at 1.5 x ATR
+    high:
+      min_atr_pct: 4.0              # ATR% >= 4% = HIGH risk
+      position_multiplier: 0.5      # 50% of base position size
+      stop_atr_multiplier: 2.0      # Stop at 2.0 x ATR
+
+# =============================================================================
+# POSITION SIZING CONFIGURATION
+# ATR-based position sizing and risk management
+# =============================================================================
+positions:
+  # Position sizing method
+  sizing_method: atr_based          # Options: atr_based, fixed_dollar, fixed_shares
+
+  # Risk per trade (for ATR-based sizing)
+  risk_per_trade: 100.0             # Maximum dollar risk per trade
+  risk_per_trade_pct: 0.5           # Alternative: % of portfolio (0.5%)
+
+  # Position limits
+  max_position_pct: 5.0             # Maximum 5% of portfolio in single position
+  max_position_value: 10000.0       # Maximum $10K per position
+
+  # Stop-loss configuration
+  stop_loss:
+    type: atr_based                 # Options: atr_based, fixed_pct
+    # ATR-based stop multiplier varies by risk tier (see volatility.risk_tiers)
+    fixed_pct: 2.0                  # Fallback: 2% fixed stop if ATR not available
+
+  # Target price (optional)
+  target:
+    enabled: false                  # Disable take-profit targets (rely on EOD close)
+    type: atr_based                 # Options: atr_based, fixed_pct
+    atr_multiplier: 2.0             # Target at 2x ATR from entry
+    fixed_pct: 4.0                  # Fallback: 4% fixed target
+
+# =============================================================================
+# RISK MANAGEMENT CONFIGURATION
+# Daily and overall risk limits
+# =============================================================================
+risk:
+  # Daily limits
+  max_daily_trades: 10              # Maximum trades per day
+  max_daily_loss: 500.0             # Maximum daily loss before stopping
+  max_daily_loss_pct: 2.0           # Maximum daily loss as % of portfolio
+
+  # Concurrent position limits
+  max_open_positions: 5             # Maximum simultaneous open positions
+  max_long_positions: 5             # Maximum long positions
+  max_short_positions: 3            # Maximum short positions
+
+  # Sector concentration
+  max_sector_exposure_pct: 30.0     # Maximum 30% exposure to single sector
+
+  # Correlation limits (optional)
+  max_correlated_positions: 3       # Max positions with correlation > 0.7
+
+# =============================================================================
+# MARKET HOURS CONFIGURATION
+# Trading schedule and timing
+# =============================================================================
+market_hours:
+  # Market hours (Eastern Time)
+  market_open: "09:30"
+  market_close: "16:00"
+
+  # Trading window
+  trading_start: "09:40"            # Start trading at 9:40 AM (after gap confirmation)
+  trading_end: "15:55"              # Stop new trades at 3:55 PM
+
+  # EOD close timing
+  eod_close_time: "15:55"           # Close all positions at 3:55 PM ET
+
+  # Pre-market hours
+  pre_market_start: "04:00"
+  pre_market_end: "09:30"
+
+  # Timezone
+  timezone: America/New_York
+
+# =============================================================================
+# BROKER CONFIGURATION
+# Tradier API settings (credentials stored in Airflow connections)
+# =============================================================================
+broker:
+  provider: tradier                 # Broker provider
+  mode: paper                       # Options: paper, live
+
+  # Tradier API settings
+  tradier:
+    sandbox: true                   # Use sandbox environment
+    # API key and account ID stored in Airflow connection: tradier_api
+
+  # Order settings
+  order_timeout: 30                 # Seconds to wait for order fill
+  retry_attempts: 3                 # Number of retry attempts for failed orders
+  retry_delay: 5                    # Seconds between retries
+
+# =============================================================================
+# MONITORING CONFIGURATION
+# Realtime price monitoring and health checks
+# =============================================================================
+monitoring:
+  # Price check interval
+  price_check_interval: 60          # Check prices every 60 seconds
+
+  # Health check settings
+  health_check:
+    enabled: true
+    interval_minutes: 15            # Health check every 15 minutes
+    stale_threshold_minutes: 5      # Alert if no price check for 5 minutes
+
+  # Logging
+  log_level: INFO                   # Options: DEBUG, INFO, WARNING, ERROR
+  log_price_checks: true            # Log each price check to database
+
+# =============================================================================
+# NOTIFICATION CONFIGURATION
+# Telegram notification settings (token stored in Airflow connections)
+# =============================================================================
+notifications:
+  telegram:
+    enabled: true
+    # Bot token and chat ID stored in Airflow connection: telegram_bot
+
+    # Notification types
+    notify_on_entry: true           # Notify on trade entry
+    notify_on_exit: true            # Notify on trade exit
+    notify_on_stop: true            # Notify on stop-loss trigger
+    notify_on_eod: true             # Notify on EOD close
+    notify_on_rejection: true       # Notify on order rejection
+    notify_daily_report: true       # Send daily performance report
+
+  # Daily report schedule
+  daily_report_time: "16:00"        # Send daily report at 4:00 PM ET
+
+# =============================================================================
+# DATABASE CONFIGURATION
+# TimescaleDB connection settings (credentials stored in Airflow connections)
+# =============================================================================
+database:
+  schema: gap_trading               # Schema name in timescaledb database
+  # Connection details stored in Airflow connection: timescaledb_default
+
+  # Data retention
+  retention:
+    price_checks_days: 30           # Keep price checks for 30 days
+    daily_gaps_days: 365            # Keep daily gaps for 1 year
+    volatility_history_days: 365    # Keep volatility history for 1 year
+
+# =============================================================================
+# BACKTESTING CONFIGURATION
+# Settings for historical backtesting
+# =============================================================================
+backtesting:
+  # Default backtest period
+  default_days: 30                  # 30 days of historical data
+
+  # Initial capital for backtest
+  initial_capital: 100000.0         # $100K starting capital
+
+  # Slippage and commission assumptions
+  slippage_pct: 0.05                # 0.05% slippage per trade
+  commission_per_trade: 0.0         # $0 commission (adjust if needed)
+
+  # Output settings
+  save_trades: true                 # Save individual trades
+  save_equity_curve: true           # Save daily equity curve
+  generate_report: true             # Generate performance report
