@@ -19,7 +19,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from enum import Enum
 from typing import Optional, List, Dict, Any, Callable
-from zoneinfo import ZoneInfo
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
