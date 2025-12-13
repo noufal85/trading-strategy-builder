@@ -371,18 +371,16 @@ class ReportGenerator:
         cursor = self.db_conn.cursor()
         cursor.execute("""
             SELECT
-                id, symbol, side, quantity, entry_price, exit_price,
-                realized_pnl, risk_tier, exit_reason, atr_at_entry,
-                entry_time, exit_time
+                position_id, symbol, direction, shares, entry_price, exit_price,
+                pnl, exit_reason, entry_time, exit_time
             FROM gap_trading.positions
             WHERE trade_date = %s
-              AND status IN ('STOPPED', 'EOD_CLOSED', 'MANUAL_CLOSED')
+              AND status = 'CLOSED'
             ORDER BY exit_time
         """, (trade_date,))
 
         columns = ['id', 'symbol', 'side', 'quantity', 'entry_price', 'exit_price',
-                   'realized_pnl', 'risk_tier', 'exit_reason', 'atr_at_entry',
-                   'entry_time', 'exit_time']
+                   'realized_pnl', 'exit_reason', 'entry_time', 'exit_time']
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     def _get_trades_for_period(self, start_date: date, end_date: date) -> List[Dict[str, Any]]:
@@ -390,18 +388,16 @@ class ReportGenerator:
         cursor = self.db_conn.cursor()
         cursor.execute("""
             SELECT
-                id, symbol, side, quantity, entry_price, exit_price,
-                realized_pnl, risk_tier, exit_reason, atr_at_entry,
-                entry_time, exit_time, trade_date
+                position_id, symbol, direction, shares, entry_price, exit_price,
+                pnl, exit_reason, entry_time, exit_time, trade_date
             FROM gap_trading.positions
             WHERE trade_date BETWEEN %s AND %s
-              AND status IN ('STOPPED', 'EOD_CLOSED', 'MANUAL_CLOSED')
+              AND status = 'CLOSED'
             ORDER BY exit_time
         """, (start_date, end_date))
 
         columns = ['id', 'symbol', 'side', 'quantity', 'entry_price', 'exit_price',
-                   'realized_pnl', 'risk_tier', 'exit_reason', 'atr_at_entry',
-                   'entry_time', 'exit_time', 'trade_date']
+                   'realized_pnl', 'exit_reason', 'entry_time', 'exit_time', 'trade_date']
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     def _calculate_trade_metrics(self, trades: List[Dict[str, Any]]) -> TradeMetrics:
@@ -570,8 +566,9 @@ class ReportGenerator:
 
     def _get_close_reasons(self, trades: List[Dict[str, Any]]) -> Tuple[int, int]:
         """Count trades by close reason."""
-        stops = len([t for t in trades if t.get('exit_reason') == 'stop_loss'])
-        eod = len([t for t in trades if t.get('exit_reason') in ('end_of_day', 'eod')])
+        # Actual exit_reason values: STOP_LOSS, TARGET_HIT, EOD_CLOSE, MANUAL, REJECTED
+        stops = len([t for t in trades if t.get('exit_reason') == 'STOP_LOSS'])
+        eod = len([t for t in trades if t.get('exit_reason') == 'EOD_CLOSE'])
         return stops, eod
 
     def _get_account_values(self, report_date: date) -> Tuple[float, float]:
@@ -585,11 +582,11 @@ class ReportGenerator:
         cursor.execute("""
             SELECT
                 trade_date,
-                SUM(realized_pnl) as daily_pnl,
+                SUM(pnl) as daily_pnl,
                 COUNT(*) as trade_count
             FROM gap_trading.positions
             WHERE trade_date BETWEEN %s AND %s
-              AND status IN ('STOPPED', 'EOD_CLOSED', 'MANUAL_CLOSED')
+              AND status = 'CLOSED'
             GROUP BY trade_date
             ORDER BY trade_date
         """, (start_date, end_date))

@@ -125,7 +125,7 @@ class OrderManager:
         db_conn: Any = None,
         max_fill_wait: int = 60,
         poll_interval: int = 2,
-        tag_prefix: str = 'gap_trading'
+        tag_prefix: str = 'gaptrading'
     ):
         """Initialize OrderManager.
 
@@ -176,20 +176,28 @@ class OrderManager:
     def execute_signal(
         self,
         signal: Any,
-        position_size: Any
+        position_size: Any,
+        use_oto: bool = True
     ) -> ExecutionResult:
         """Execute a trade signal with full lifecycle.
 
-        Flow:
+        Flow (OTO mode - default):
+        1. Check buying power
+        2. Place OTO order (entry + stop in single API call)
+        3. Wait for entry fill
+        4. Record in database
+
+        Flow (Legacy mode - use_oto=False):
         1. Check buying power
         2. Place entry order (market)
         3. Wait for fill
-        4. Place stop-loss order
+        4. Place stop-loss order separately
         5. Record in database
 
         Args:
             signal: TradeSignal from signal generator
             position_size: PositionSize from position sizer
+            use_oto: Use OTO (One-Triggers-Other) orders (default True)
 
         Returns:
             ExecutionResult with order details
@@ -199,7 +207,7 @@ class OrderManager:
         signal_type = signal.signal_type.value  # BUY or SELL_SHORT
         stop_price = position_size.stop_loss
 
-        logger.info(f"Executing signal: {signal_type} {shares} {symbol}")
+        logger.info(f"Executing signal: {signal_type} {shares} {symbol} (OTO={use_oto})")
 
         # 1. Check buying power
         required = shares * signal.entry_price
@@ -216,6 +224,132 @@ class OrderManager:
                 error="Insufficient buying power"
             )
 
+        # Use OTO order (entry + stop in single API call)
+        if use_oto:
+            return self._execute_with_oto(signal, signal_type, symbol, shares, stop_price)
+
+        # Legacy: Separate entry and stop orders
+        return self._execute_with_separate_orders(signal, signal_type, symbol, shares, stop_price)
+
+    def _execute_with_oto(
+        self,
+        signal: Any,
+        signal_type: str,
+        symbol: str,
+        shares: int,
+        stop_price: float
+    ) -> ExecutionResult:
+        """Execute signal using OTO (One-Triggers-Other) order.
+
+        Places entry and stop-loss in a single API call.
+        """
+        # Determine entry side
+        if signal_type.upper() in ('BUY', 'LONG'):
+            entry_side = 'buy'
+        elif signal_type.upper() in ('SELL_SHORT', 'SHORT'):
+            entry_side = 'sell_short'
+        else:
+            return ExecutionResult(
+                status=ExecutionStatus.FAILED,
+                message=f"Invalid signal type: {signal_type}",
+                error=f"Invalid signal type: {signal_type}"
+            )
+
+        # Use hyphens in tag - Tradier API rejects underscores
+        tag = f"{self.tag_prefix}-oto-{symbol}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+        try:
+            # Place OTO order (entry + stop in single call)
+            oto_result = self.tradier_client.place_oto_order(
+                symbol=symbol,
+                entry_side=entry_side,
+                quantity=shares,
+                stop_price=stop_price,
+                entry_type='market',
+                tag=tag
+            )
+
+            logger.info(f"OTO order placed for {symbol}: {oto_result}")
+
+            # Wait for entry to fill
+            entry_order_id = oto_result.get('entry_order_id') or oto_result.get('parent_order_id')
+            filled_order = self._wait_for_fill(entry_order_id)
+
+            if not filled_order or filled_order.status != 'filled':
+                # Cancel unfilled OTO order
+                parent_id = oto_result.get('parent_order_id')
+                if parent_id:
+                    self.cancel_order(parent_id)
+
+                return ExecutionResult(
+                    status=ExecutionStatus.TIMEOUT,
+                    message="OTO entry order not filled within timeout",
+                    error="Fill timeout"
+                )
+
+            # Create entry order response for DB recording
+            entry_response = OrderResponse(
+                success=True,
+                order_id=entry_order_id,
+                symbol=symbol,
+                side=entry_side,
+                quantity=shares,
+                order_type='market',
+                status='filled',
+                fill_price=filled_order.avg_fill_price,
+                fill_quantity=filled_order.filled_quantity,
+                message="OTO entry filled"
+            )
+
+            # Create stop order response (stop is automatically placed by Tradier)
+            stop_order_id = oto_result.get('stop_order_id')
+            stop_response = OrderResponse(
+                success=True,
+                order_id=stop_order_id,
+                symbol=symbol,
+                side='sell' if entry_side == 'buy' else 'buy_to_cover',
+                quantity=filled_order.filled_quantity,
+                order_type='stop',
+                price=stop_price,
+                status='open',  # Stop is now active
+                message="OTO stop order active"
+            )
+
+            # Record in database
+            position_id = None
+            if self.db_conn:
+                position_id = self._record_orders(
+                    signal=signal,
+                    entry_order=entry_response,
+                    stop_order=stop_response
+                )
+
+            return ExecutionResult(
+                status=ExecutionStatus.SUCCESS,
+                entry_order=entry_response,
+                stop_order=stop_response,
+                position_id=position_id,
+                message=f"OTO executed {signal_type} {filled_order.filled_quantity} "
+                        f"{symbol} @ ${filled_order.avg_fill_price:.2f}"
+            )
+
+        except Exception as e:
+            logger.error(f"OTO order failed for {symbol}: {e}")
+            return ExecutionResult(
+                status=ExecutionStatus.FAILED,
+                message=f"OTO order failed: {str(e)}",
+                error=str(e)
+            )
+
+    def _execute_with_separate_orders(
+        self,
+        signal: Any,
+        signal_type: str,
+        symbol: str,
+        shares: int,
+        stop_price: float
+    ) -> ExecutionResult:
+        """Execute signal using separate entry and stop orders (legacy mode)."""
         # 2. Place entry order
         entry_response = self.place_entry_order(
             symbol=symbol,
@@ -259,27 +393,29 @@ class OrderManager:
             stop_price=stop_price
         )
 
-        if not stop_response.success:
-            logger.error(
-                f"Failed to place stop order for {symbol}: "
-                f"{stop_response.message}"
-            )
-            # Entry filled but stop failed - log warning but don't fail
-            return ExecutionResult(
-                status=ExecutionStatus.PARTIAL,
-                entry_order=entry_response,
-                stop_order=stop_response,
-                message="Entry filled but stop order failed",
-                error=stop_response.message
-            )
-
-        # 5. Record in database
+        # 5. Record in database - ALWAYS record if entry was filled
+        # This is critical because the entry order executed and we need to track the position
         position_id = None
         if self.db_conn:
             position_id = self._record_orders(
                 signal=signal,
                 entry_order=entry_response,
-                stop_order=stop_response
+                stop_order=stop_response if stop_response.success else None
+            )
+
+        if not stop_response.success:
+            logger.error(
+                f"Failed to place stop order for {symbol}: "
+                f"{stop_response.message}"
+            )
+            # Entry filled but stop failed - position is still recorded
+            return ExecutionResult(
+                status=ExecutionStatus.PARTIAL,
+                entry_order=entry_response,
+                stop_order=stop_response,
+                position_id=position_id,
+                message="Entry filled but stop order failed - position recorded without stop",
+                error=stop_response.message
             )
 
         return ExecutionResult(
@@ -319,7 +455,8 @@ class OrderManager:
                 message=f"Invalid signal type: {signal_type}"
             )
 
-        tag = f"{self.tag_prefix}_entry_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Use hyphens instead of underscores - Tradier API rejects underscores in tags
+        tag = f"{self.tag_prefix}-entry-{symbol}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
         try:
             order = self.tradier_client.place_market_order(
@@ -385,7 +522,8 @@ class OrderManager:
                 message=f"Invalid signal type: {signal_type}"
             )
 
-        tag = f"{self.tag_prefix}_stop_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Use hyphens instead of underscores - Tradier API rejects underscores in tags
+        tag = f"{self.tag_prefix}-stop-{symbol}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
         try:
             order = self.tradier_client.place_stop_order(
@@ -457,7 +595,8 @@ class OrderManager:
         else:
             side = 'buy_to_cover'
 
-        tag = f"{self.tag_prefix}_close_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Use hyphens instead of underscores - Tradier API rejects underscores in tags
+        tag = f"{self.tag_prefix}-close-{symbol}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
         try:
             order = self.tradier_client.place_market_order(
@@ -666,73 +805,95 @@ class OrderManager:
 
         try:
             cursor = self.db_conn.cursor()
+            today = datetime.now().date()
+            now = datetime.now()
 
-            # Insert into orders table
+            # First create the position record (orders reference it via FK)
+            insert_position_sql = """
+                INSERT INTO gap_trading.positions (
+                    trade_date, symbol, direction, shares, entry_price, entry_time,
+                    stop_loss, status, signal_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING position_id
+            """
+
+            cursor.execute(insert_position_sql, (
+                today,
+                entry_order.symbol,
+                'LONG' if entry_order.side == 'buy' else 'SHORT',
+                entry_order.fill_quantity,
+                entry_order.fill_price,
+                now,
+                stop_order.price if stop_order else None,
+                'OPEN',
+                getattr(signal, 'id', None)
+            ))
+            position_id = cursor.fetchone()[0]
+
+            # Insert into orders table - entry order
             insert_order_sql = """
                 INSERT INTO gap_trading.orders (
-                    symbol, side, quantity, order_type, price,
-                    tradier_order_id, status, purpose, fill_price,
-                    fill_quantity, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    trade_date, symbol, tradier_order_id, order_type, side,
+                    order_class, quantity, limit_price, stop_price, status,
+                    fill_price, filled_quantity, filled_at, related_position_id,
+                    related_signal_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
 
             # Entry order
             cursor.execute(insert_order_sql, (
+                today,
                 entry_order.symbol,
-                entry_order.side,
-                entry_order.quantity,
+                str(entry_order.order_id) if entry_order.order_id else None,
                 entry_order.order_type,
-                entry_order.price,
-                entry_order.order_id,
+                entry_order.side,
+                'equity',
+                entry_order.quantity,
+                None,  # limit_price (market orders don't have one)
+                None,  # stop_price (entry is market order)
                 entry_order.status,
-                'entry',
                 entry_order.fill_price,
                 entry_order.fill_quantity,
-                entry_order.timestamp
+                now if entry_order.fill_quantity else None,
+                position_id,
+                getattr(signal, 'id', None)
             ))
             entry_db_id = cursor.fetchone()[0]
+
+            # Update position with entry_order_id
+            cursor.execute(
+                "UPDATE gap_trading.positions SET entry_order_id = %s WHERE position_id = %s",
+                (entry_db_id, position_id)
+            )
 
             # Stop order
             stop_db_id = None
             if stop_order and stop_order.success:
                 cursor.execute(insert_order_sql, (
+                    today,
                     stop_order.symbol,
-                    stop_order.side,
-                    stop_order.quantity,
+                    str(stop_order.order_id) if stop_order.order_id else None,
                     stop_order.order_type,
-                    stop_order.price,
-                    stop_order.order_id,
+                    stop_order.side,
+                    'equity',
+                    stop_order.quantity,
+                    None,  # limit_price
+                    stop_order.price,  # stop_price
                     stop_order.status,
-                    'stop_loss',
                     stop_order.fill_price,
                     stop_order.fill_quantity,
-                    stop_order.timestamp
+                    None,  # filled_at (not filled yet)
+                    position_id,
+                    getattr(signal, 'id', None)
                 ))
                 stop_db_id = cursor.fetchone()[0]
 
-            # Create position record
-            insert_position_sql = """
-                INSERT INTO gap_trading.positions (
-                    symbol, side, quantity, entry_price, entry_order_id,
-                    stop_order_id, stop_price, status, signal_id, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-            """
-
-            cursor.execute(insert_position_sql, (
-                entry_order.symbol,
-                'LONG' if entry_order.side == 'buy' else 'SHORT',
-                entry_order.fill_quantity,
-                entry_order.fill_price,
-                entry_db_id,
-                stop_db_id,
-                stop_order.price if stop_order else None,
-                'OPEN',
-                getattr(signal, 'id', None),
-                datetime.now()
-            ))
-            position_id = cursor.fetchone()[0]
+                # Update position with stop_order_id
+                cursor.execute(
+                    "UPDATE gap_trading.positions SET stop_order_id = %s WHERE position_id = %s",
+                    (stop_db_id, position_id)
+                )
 
             self.db_conn.commit()
             logger.info(f"Recorded position {position_id} for {entry_order.symbol}")
@@ -757,11 +918,12 @@ class OrderManager:
         try:
             cursor = self.db_conn.cursor()
             cursor.execute("""
-                SELECT symbol, quantity, side, entry_price, stop_price
+                SELECT symbol, shares, direction, entry_price, stop_loss
                 FROM gap_trading.positions
                 WHERE status = 'OPEN'
             """)
 
+            # Map to expected keys for sync comparison
             columns = ['symbol', 'quantity', 'side', 'entry_price', 'stop_price']
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 

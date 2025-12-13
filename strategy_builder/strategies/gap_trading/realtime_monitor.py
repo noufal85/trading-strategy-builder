@@ -356,15 +356,15 @@ class RealtimeStopLossMonitor:
         try:
             cursor = self.db_conn.cursor()
             cursor.execute("""
-                SELECT id, symbol, side, quantity, entry_price, stop_price,
-                       stop_order_id, atr_at_entry
+                SELECT position_id, symbol, direction, shares, entry_price, stop_loss,
+                       stop_order_id
                 FROM gap_trading.positions
                 WHERE status = 'OPEN'
                   AND trade_date = CURRENT_DATE
             """)
 
             columns = ['id', 'symbol', 'side', 'quantity', 'entry_price',
-                       'stop_price', 'stop_order_id', 'atr_at_entry']
+                       'stop_price', 'stop_order_id']
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
         except Exception as e:
@@ -565,7 +565,7 @@ class RealtimeStopLossMonitor:
 
             # Get entry price for P&L calculation
             cursor.execute(
-                "SELECT entry_price, quantity, side FROM gap_trading.positions WHERE id = %s",
+                "SELECT entry_price, shares, direction FROM gap_trading.positions WHERE position_id = %s",
                 (position_id,)
             )
             row = cursor.fetchone()
@@ -576,12 +576,19 @@ class RealtimeStopLossMonitor:
 
             # Calculate P&L
             if side == 'LONG':
-                realized_pnl = (exit_price - entry_price) * quantity
+                realized_pnl = (exit_price - float(entry_price)) * quantity
             else:
-                realized_pnl = (entry_price - exit_price) * abs(quantity)
+                realized_pnl = (float(entry_price) - exit_price) * abs(quantity)
 
-            # Determine status
-            status = 'STOPPED' if exit_reason == 'stop_loss' else 'EOD_CLOSED'
+            # Map exit_reason to valid enum values
+            db_exit_reason = {
+                'stop_loss': 'STOP_LOSS',
+                'end_of_day': 'EOD_CLOSE',
+                'manual': 'MANUAL'
+            }.get(exit_reason, exit_reason.upper())
+
+            # Determine status - use 'CLOSED' which is valid in the schema
+            status = 'CLOSED'
 
             cursor.execute("""
                 UPDATE gap_trading.positions SET
@@ -589,13 +596,13 @@ class RealtimeStopLossMonitor:
                     exit_price = %s,
                     exit_time = %s,
                     exit_reason = %s,
-                    realized_pnl = %s
-                WHERE id = %s
+                    pnl = %s
+                WHERE position_id = %s
             """, (
                 status,
                 exit_price,
                 datetime.now(),
-                exit_reason,
+                db_exit_reason,
                 realized_pnl,
                 position_id
             ))
