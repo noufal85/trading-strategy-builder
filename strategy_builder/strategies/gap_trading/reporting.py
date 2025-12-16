@@ -552,7 +552,7 @@ class ReportGenerator:
 
         cursor.execute("""
             SELECT COUNT(*) FROM gap_trading.trade_signals
-            WHERE signal_date = %s
+            WHERE trade_date = %s
         """, (report_date,))
         generated = cursor.fetchone()[0] or 0
 
@@ -603,20 +603,22 @@ class ReportGenerator:
     def _store_report(self, report: DailyReport):
         """Store report in database."""
         try:
+            import json
             cursor = self.db_conn.cursor()
             cursor.execute("""
                 INSERT INTO gap_trading.daily_reports
-                (report_date, total_trades, winning_trades, losing_trades,
-                 net_pnl, win_rate, gross_profit, gross_loss, report_data, created_at)
+                (trade_date, trades_executed, winning_trades, losing_trades,
+                 daily_pnl, daily_pnl_pct, largest_win, largest_loss,
+                 report_data, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (report_date) DO UPDATE SET
-                    total_trades = EXCLUDED.total_trades,
+                ON CONFLICT (trade_date) DO UPDATE SET
+                    trades_executed = EXCLUDED.trades_executed,
                     winning_trades = EXCLUDED.winning_trades,
                     losing_trades = EXCLUDED.losing_trades,
-                    net_pnl = EXCLUDED.net_pnl,
-                    win_rate = EXCLUDED.win_rate,
-                    gross_profit = EXCLUDED.gross_profit,
-                    gross_loss = EXCLUDED.gross_loss,
+                    daily_pnl = EXCLUDED.daily_pnl,
+                    daily_pnl_pct = EXCLUDED.daily_pnl_pct,
+                    largest_win = EXCLUDED.largest_win,
+                    largest_loss = EXCLUDED.largest_loss,
                     report_data = EXCLUDED.report_data,
                     created_at = EXCLUDED.created_at
             """, (
@@ -625,13 +627,14 @@ class ReportGenerator:
                 report.trade_metrics.winning_trades,
                 report.trade_metrics.losing_trades,
                 report.trade_metrics.net_pnl,
-                report.trade_metrics.win_rate,
-                report.trade_metrics.gross_profit,
-                report.trade_metrics.gross_loss,
-                str(report.to_dict()),
+                report.daily_return_pct,
+                report.trade_metrics.largest_win,
+                report.trade_metrics.largest_loss,
+                json.dumps(report.to_dict(), default=str),
                 report.generated_at
             ))
             self.db_conn.commit()
+            logger.info(f"Report stored for {report.report_date}")
         except Exception as e:
             logger.error(f"Failed to store report: {e}")
             self.db_conn.rollback()
