@@ -409,7 +409,20 @@ class RealtimeStopLossMonitor:
             position: Position dict
             current_price: Current market price
         """
-        from .order_manager import OrderManager
+        # Import OrderManager - handle both package and standalone contexts
+        try:
+            from .order_manager import OrderManager
+        except ImportError:
+            import importlib.util
+            import os
+            module_dir = os.path.dirname(os.path.abspath(__file__))
+            spec = importlib.util.spec_from_file_location(
+                "order_manager",
+                os.path.join(module_dir, "order_manager.py")
+            )
+            order_manager_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(order_manager_module)
+            OrderManager = order_manager_module.OrderManager
 
         symbol = position['symbol']
         quantity = abs(position['quantity'])
@@ -458,7 +471,21 @@ class RealtimeStopLossMonitor:
         Args:
             reason: Reason for closing
         """
-        from .order_manager import OrderManager
+        # Import OrderManager - handle both package and standalone contexts
+        try:
+            from .order_manager import OrderManager
+        except ImportError:
+            # Standalone script mode - use importlib
+            import importlib.util
+            import os
+            module_dir = os.path.dirname(os.path.abspath(__file__))
+            spec = importlib.util.spec_from_file_location(
+                "order_manager",
+                os.path.join(module_dir, "order_manager.py")
+            )
+            order_manager_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(order_manager_module)
+            OrderManager = order_manager_module.OrderManager
 
         positions = self._get_open_positions()
         logger.info(f"Closing {len(positions)} positions ({reason.value})")
