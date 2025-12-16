@@ -367,7 +367,11 @@ class ReportGenerator:
         return message
 
     def _get_trades_for_date(self, trade_date: date) -> List[Dict[str, Any]]:
-        """Get closed trades for a specific date."""
+        """Get closed gap trading positions for a specific date.
+
+        Only includes positions where strategy = 'gap_trading' to exclude
+        positions from other trading strategies.
+        """
         cursor = self.db_conn.cursor()
         cursor.execute("""
             SELECT
@@ -376,6 +380,7 @@ class ReportGenerator:
             FROM gap_trading.positions
             WHERE trade_date = %s
               AND status = 'CLOSED'
+              AND strategy = 'gap_trading'
             ORDER BY exit_time
         """, (trade_date,))
 
@@ -384,7 +389,11 @@ class ReportGenerator:
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     def _get_trades_for_period(self, start_date: date, end_date: date) -> List[Dict[str, Any]]:
-        """Get closed trades for a date range."""
+        """Get closed gap trading positions for a date range.
+
+        Only includes positions where strategy = 'gap_trading' to exclude
+        positions from other trading strategies.
+        """
         cursor = self.db_conn.cursor()
         cursor.execute("""
             SELECT
@@ -393,6 +402,7 @@ class ReportGenerator:
             FROM gap_trading.positions
             WHERE trade_date BETWEEN %s AND %s
               AND status = 'CLOSED'
+              AND strategy = 'gap_trading'
             ORDER BY exit_time
         """, (start_date, end_date))
 
@@ -577,7 +587,11 @@ class ReportGenerator:
         return 100000.0, 100000.0
 
     def _get_daily_pnl_series(self, start_date: date, end_date: date) -> List[Dict[str, Any]]:
-        """Get daily P&L series for charting."""
+        """Get daily P&L series for charting.
+
+        Only includes positions where strategy = 'gap_trading' to exclude
+        positions from other trading strategies.
+        """
         cursor = self.db_conn.cursor()
         cursor.execute("""
             SELECT
@@ -587,6 +601,7 @@ class ReportGenerator:
             FROM gap_trading.positions
             WHERE trade_date BETWEEN %s AND %s
               AND status = 'CLOSED'
+              AND strategy = 'gap_trading'
             GROUP BY trade_date
             ORDER BY trade_date
         """, (start_date, end_date))

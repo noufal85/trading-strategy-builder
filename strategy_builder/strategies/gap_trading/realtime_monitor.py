@@ -269,9 +269,8 @@ class RealtimeStopLossMonitor:
 
         # Check if past EOD close time
         if now >= self.config.eod_close_datetime:
-            logger.info("EOD close time reached, closing all positions")
-            self._close_all_positions(CloseReason.END_OF_DAY)
-            self._running = False
+            logger.info("EOD close time reached, initiating EOD close sequence")
+            self._execute_eod_close_sequence()
             return
 
         # Check if market is closed
@@ -349,7 +348,11 @@ class RealtimeStopLossMonitor:
             return current_price >= stop_price
 
     def _get_open_positions(self) -> List[Dict[str, Any]]:
-        """Get all open positions from database."""
+        """Get all open gap trading positions from database.
+
+        Only returns positions where strategy = 'gap_trading' to avoid
+        interfering with other trading strategies.
+        """
         if not self.db_conn:
             return []
 
@@ -357,14 +360,15 @@ class RealtimeStopLossMonitor:
             cursor = self.db_conn.cursor()
             cursor.execute("""
                 SELECT position_id, symbol, direction, shares, entry_price, stop_loss,
-                       stop_order_id
+                       stop_order_id, strategy
                 FROM gap_trading.positions
                 WHERE status = 'OPEN'
                   AND trade_date = CURRENT_DATE
+                  AND strategy = 'gap_trading'
             """)
 
             columns = ['id', 'symbol', 'side', 'quantity', 'entry_price',
-                       'stop_price', 'stop_order_id']
+                       'stop_price', 'stop_order_id', 'strategy']
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
         except Exception as e:
@@ -405,6 +409,9 @@ class RealtimeStopLossMonitor:
     def _trigger_stop_close(self, position: Dict[str, Any], current_price: float):
         """Trigger position close due to stop-loss.
 
+        IMPORTANT: Only updates DB after verifying broker execution.
+        This ensures database and broker are always in sync.
+
         Args:
             position: Position dict
             current_price: Current market price
@@ -428,6 +435,7 @@ class RealtimeStopLossMonitor:
         quantity = abs(position['quantity'])
         is_long = position['side'] == 'LONG'
         stop_order_id = position.get('stop_order_id')
+        position_id = position['id']
 
         logger.info(f"Triggering stop-loss close for {symbol}")
 
@@ -446,30 +454,156 @@ class RealtimeStopLossMonitor:
             )
 
             if result.success:
-                # Update position in database
-                self._update_position_closed(
-                    position_id=position['id'],
-                    exit_price=current_price,
-                    exit_reason=CloseReason.STOP_LOSS.value
+                # VERIFY order execution before updating DB
+                order_tag = getattr(result, 'tag', None)
+                verified, fill_price, error = self._verify_order_execution(
+                    order_id=result.order_id,
+                    expected_tag=order_tag,
+                    timeout=60
                 )
 
-                logger.info(f"Position {symbol} closed via stop-loss")
+                if verified:
+                    # Use actual fill price from broker
+                    actual_exit_price = fill_price if fill_price > 0 else current_price
 
-                # Callback
-                if self.on_stop_triggered:
-                    self.on_stop_triggered(position, current_price)
+                    # Now safe to update database
+                    self._update_position_closed(
+                        position_id=position_id,
+                        exit_price=actual_exit_price,
+                        exit_reason=CloseReason.STOP_LOSS.value
+                    )
 
+                    logger.info(
+                        f"Position {symbol} closed via stop-loss @ ${actual_exit_price:.2f} (verified)"
+                    )
+
+                    # Callback
+                    if self.on_stop_triggered:
+                        self.on_stop_triggered(position, actual_exit_price)
+                else:
+                    # Order placed but not verified - DO NOT update DB
+                    logger.error(
+                        f"CRITICAL: Close order placed but NOT verified for {symbol}! "
+                        f"Order {result.order_id} - {error}. "
+                        f"Position remains OPEN in DB, check broker manually."
+                    )
+                    # Record the failure for tracking
+                    self._record_close_failure(
+                        position_id=position_id,
+                        order_id=result.order_id,
+                        error=error
+                    )
             else:
                 logger.error(f"Failed to close {symbol}: {result.message}")
+                self._record_close_failure(
+                    position_id=position_id,
+                    order_id=None,
+                    error=result.message
+                )
 
         except Exception as e:
             logger.error(f"Error closing position {symbol}: {e}")
+            self._record_close_failure(
+                position_id=position_id,
+                order_id=None,
+                error=str(e)
+            )
+
+    def _execute_eod_close_sequence(self):
+        """Execute EOD close with retry logic.
+
+        Improved EOD close flow:
+        1. 3:55 PM: Initial close attempt for all positions
+        2. Wait up to 60s for verification
+        3. Retry failed positions up to 2 more times
+        4. Final alert for any remaining open positions
+        5. Stop monitor after all attempts
+
+        This ensures we don't exit immediately after placing orders,
+        giving time for verification and retry.
+        """
+        max_retries = 3
+        retry_delay = 30  # seconds between retries
+
+        logger.info("=" * 50)
+        logger.info("STARTING EOD CLOSE SEQUENCE")
+        logger.info("=" * 50)
+
+        for attempt in range(1, max_retries + 1):
+            # Check how much time we have left
+            now = datetime.now(ET)
+            market_close = self.config.market_close_datetime
+            time_until_close = (market_close - now).total_seconds()
+
+            if time_until_close < 30:
+                logger.warning(
+                    f"Only {time_until_close:.0f}s until market close, "
+                    "stopping retries"
+                )
+                break
+
+            logger.info(f"EOD Close Attempt {attempt}/{max_retries}")
+
+            # Attempt to close all positions
+            result = self._close_all_positions(CloseReason.END_OF_DAY)
+
+            if result['failed'] == 0:
+                logger.info(
+                    f"✅ All {result['closed']} positions closed successfully!"
+                )
+                break
+
+            logger.warning(
+                f"Attempt {attempt}: {result['closed']} closed, "
+                f"{result['failed']} failed"
+            )
+
+            # If this wasn't the last attempt, wait and retry
+            if attempt < max_retries:
+                # Check for remaining open positions
+                remaining = self._get_open_positions()
+                if not remaining:
+                    logger.info("No remaining open positions, closing sequence complete")
+                    break
+
+                logger.info(
+                    f"Waiting {retry_delay}s before retry... "
+                    f"({len(remaining)} positions remaining)"
+                )
+                time.sleep(retry_delay)
+
+        # Final check for any remaining positions
+        final_open = self._get_open_positions()
+        if final_open:
+            logger.critical(
+                f"⚠️ EOD CLOSE INCOMPLETE: {len(final_open)} positions still open!"
+            )
+            for pos in final_open:
+                logger.critical(
+                    f"  - {pos['symbol']}: {pos['quantity']} shares ({pos['side']})"
+                )
+            # Final alert was already sent by _close_all_positions
+        else:
+            logger.info("✅ EOD close sequence complete - all positions closed")
+
+        logger.info("=" * 50)
+        logger.info("EOD CLOSE SEQUENCE FINISHED")
+        logger.info("=" * 50)
+
+        # Now stop the monitor
+        self._running = False
 
     def _close_all_positions(self, reason: CloseReason):
         """Close all open positions (EOD or manual).
 
+        IMPORTANT: Only updates DB after verifying broker execution.
+        Tracks failed closes and sends alerts for unverified positions.
+
         Args:
             reason: Reason for closing
+
+        Returns:
+            Dict with success/failure counts
         """
         # Import OrderManager - handle both package and standalone contexts
         try:
@@ -490,16 +624,24 @@ class RealtimeStopLossMonitor:
         positions = self._get_open_positions()
         logger.info(f"Closing {len(positions)} positions ({reason.value})")
 
+        if not positions:
+            return {'closed': 0, 'failed': 0, 'positions': []}
+
         order_manager = OrderManager(
             tradier_client=self.tradier_client,
             db_conn=self.db_conn
         )
+
+        # Track results
+        closed_count = 0
+        failed_positions = []
 
         for position in positions:
             symbol = position['symbol']
             quantity = abs(position['quantity'])
             is_long = position['side'] == 'LONG'
             stop_order_id = position.get('stop_order_id')
+            position_id = position['id']
 
             try:
                 result = order_manager.close_position(
@@ -510,25 +652,99 @@ class RealtimeStopLossMonitor:
                 )
 
                 if result.success:
-                    # Get current price for exit
-                    quotes = self._get_quotes([symbol])
-                    exit_price = quotes.get(symbol, {}).get('price', 0)
-
-                    self._update_position_closed(
-                        position_id=position['id'],
-                        exit_price=exit_price,
-                        exit_reason=reason.value
+                    # VERIFY order execution before updating DB
+                    order_tag = getattr(result, 'tag', None)
+                    verified, fill_price, error = self._verify_order_execution(
+                        order_id=result.order_id,
+                        expected_tag=order_tag,
+                        timeout=60
                     )
-                    logger.info(f"Closed {symbol} ({reason.value})")
+
+                    if verified:
+                        # Use actual fill price from broker
+                        exit_price = fill_price if fill_price > 0 else 0
+                        if exit_price == 0:
+                            quotes = self._get_quotes([symbol])
+                            exit_price = quotes.get(symbol, {}).get('price', 0)
+
+                        self._update_position_closed(
+                            position_id=position_id,
+                            exit_price=exit_price,
+                            exit_reason=reason.value
+                        )
+                        closed_count += 1
+                        logger.info(f"Closed {symbol} @ ${exit_price:.2f} ({reason.value}) - VERIFIED")
+                    else:
+                        # Order placed but not verified - DO NOT update DB
+                        logger.error(
+                            f"CRITICAL: EOD close order NOT verified for {symbol}! "
+                            f"Order {result.order_id} - {error}. "
+                            f"Position remains OPEN in DB."
+                        )
+                        self._record_close_failure(
+                            position_id=position_id,
+                            order_id=result.order_id,
+                            error=error
+                        )
+                        failed_positions.append({
+                            'symbol': symbol,
+                            'position_id': position_id,
+                            'order_id': result.order_id,
+                            'error': error,
+                            'shares': quantity,
+                            'direction': 'LONG' if is_long else 'SHORT'
+                        })
                 else:
-                    logger.error(f"Failed to close {symbol}: {result.message}")
+                    logger.error(f"Failed to place close order for {symbol}: {result.message}")
+                    self._record_close_failure(
+                        position_id=position_id,
+                        order_id=None,
+                        error=result.message
+                    )
+                    failed_positions.append({
+                        'symbol': symbol,
+                        'position_id': position_id,
+                        'order_id': None,
+                        'error': result.message,
+                        'shares': quantity,
+                        'direction': 'LONG' if is_long else 'SHORT'
+                    })
 
             except Exception as e:
                 logger.error(f"Error closing {symbol}: {e}")
+                self._record_close_failure(
+                    position_id=position_id,
+                    order_id=None,
+                    error=str(e)
+                )
+                failed_positions.append({
+                    'symbol': symbol,
+                    'position_id': position_id,
+                    'order_id': None,
+                    'error': str(e),
+                    'shares': quantity,
+                    'direction': 'LONG' if is_long else 'SHORT'
+                })
+
+        # Log summary
+        logger.info(
+            f"EOD Close Summary: {closed_count}/{len(positions)} closed, "
+            f"{len(failed_positions)} failed"
+        )
+
+        # Send alert for failed positions
+        if failed_positions:
+            self._send_eod_failure_alert(failed_positions, reason)
 
         # Callback
         if self.on_eod_close and reason == CloseReason.END_OF_DAY:
             self.on_eod_close(positions)
+
+        return {
+            'closed': closed_count,
+            'failed': len(failed_positions),
+            'failed_positions': failed_positions
+        }
 
     def _record_price_check(
         self,
@@ -568,6 +784,44 @@ class RealtimeStopLossMonitor:
 
         except Exception as e:
             logger.error(f"Failed to record price check: {e}")
+            if self.db_conn:
+                self.db_conn.rollback()
+
+    def _record_close_failure(
+        self,
+        position_id: int,
+        order_id: Optional[int],
+        error: str
+    ):
+        """Record a failed close attempt in the database.
+
+        Updates close_attempts and last_close_error columns.
+        Does NOT change position status - position remains OPEN.
+
+        Args:
+            position_id: Position ID
+            order_id: Order ID if order was placed
+            error: Error message
+        """
+        if not self.db_conn:
+            return
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("""
+                UPDATE gap_trading.positions SET
+                    close_attempts = close_attempts + 1,
+                    last_close_error = %s
+                WHERE position_id = %s
+            """, (
+                f"Order {order_id}: {error}" if order_id else error,
+                position_id
+            ))
+            self.db_conn.commit()
+            logger.info(f"Recorded close failure for position {position_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to record close failure: {e}")
             if self.db_conn:
                 self.db_conn.rollback()
 
@@ -648,6 +902,139 @@ class RealtimeStopLossMonitor:
         """
         # TODO: Integrate with Telegram notifications
         logger.critical(f"ALERT: Monitor error - {error_message}")
+
+    def _send_eod_failure_alert(self, failed_positions: List[Dict], reason: CloseReason):
+        """Send Telegram alert for failed EOD close positions.
+
+        Args:
+            failed_positions: List of positions that failed to close
+            reason: Close reason (EOD, etc.)
+        """
+        if not failed_positions:
+            return
+
+        # Build alert message
+        now = datetime.now(ET)
+        message = f"""🚨 *Gap Trading EOD Close Failed*
+Date: {now.strftime('%Y-%m-%d')}
+Time: {now.strftime('%H:%M')} ET
+Reason: {reason.value}
+
+*{len(failed_positions)} Position(s) Failed to Close:*
+"""
+        for pos in failed_positions:
+            message += f"""
+• *{pos['symbol']}* ({pos['direction']})
+  Shares: {pos['shares']}
+  Order ID: {pos.get('order_id', 'N/A')}
+  Error: {pos['error']}
+"""
+
+        message += """
+⚠️ *Action Required*: Manual close may be needed.
+Check Tradier positions and verify DB state.
+"""
+
+        logger.critical(f"EOD FAILURE ALERT:\n{message}")
+
+        # Try to send via Telegram
+        try:
+            # Try importing from airflow_common if available
+            try:
+                from airflow_common.notifications.telegram import TelegramNotifier
+                notifier = TelegramNotifier()
+                notifier.send_message(message, parse_mode="Markdown")
+                logger.info("EOD failure alert sent via Telegram")
+            except ImportError:
+                # Fallback: try direct telegram via environment
+                import os
+                import requests
+
+                bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+                chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+
+                if bot_token and chat_id:
+                    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                    response = requests.post(url, json={
+                        'chat_id': chat_id,
+                        'text': message,
+                        'parse_mode': 'Markdown'
+                    }, timeout=10)
+                    if response.ok:
+                        logger.info("EOD failure alert sent via Telegram (direct)")
+                    else:
+                        logger.warning(f"Telegram API error: {response.text}")
+                else:
+                    logger.warning(
+                        "Cannot send Telegram alert - no credentials. "
+                        "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables."
+                    )
+        except Exception as e:
+            logger.error(f"Failed to send Telegram alert: {e}")
+
+    def _verify_order_execution(
+        self,
+        order_id: int,
+        expected_tag: str,
+        timeout: int = 60,
+        poll_interval: int = 2
+    ) -> tuple:
+        """Verify order executed at broker before updating DB.
+
+        Uses both order_id lookup AND tag verification for double-check.
+        This ensures DB is only updated after broker confirms execution.
+
+        Args:
+            order_id: Tradier order ID
+            expected_tag: Expected order tag for verification
+            timeout: Max seconds to wait for fill
+            poll_interval: Seconds between status checks
+
+        Returns:
+            Tuple of (success: bool, fill_price: float, error: str)
+        """
+        start_time = time.time()
+        last_status = None
+
+        while time.time() - start_time < timeout:
+            try:
+                order = self.tradier_client.get_order(order_id)
+
+                if order is None:
+                    return (False, 0.0, f"Order {order_id} not found at broker")
+
+                # Verify tag matches (ensures we're checking the right order)
+                order_tag = getattr(order, 'tag', None)
+                if order_tag and expected_tag and order_tag != expected_tag:
+                    logger.error(
+                        f"Tag mismatch: expected '{expected_tag}', got '{order_tag}'"
+                    )
+                    return (False, 0.0, f"Tag mismatch - order may be incorrect")
+
+                last_status = order.status.value if hasattr(order.status, 'value') else str(order.status)
+
+                # Check if filled
+                if order.is_filled:
+                    fill_price = getattr(order, 'avg_fill_price', 0) or 0
+                    logger.info(
+                        f"Order {order_id} verified: FILLED @ ${fill_price:.2f}"
+                    )
+                    return (True, float(fill_price), None)
+
+                # Check if rejected/cancelled
+                if order.is_terminal and not order.is_filled:
+                    logger.warning(f"Order {order_id} terminal but not filled: {last_status}")
+                    return (False, 0.0, f"Order {last_status}")
+
+                time.sleep(poll_interval)
+
+            except Exception as e:
+                logger.error(f"Error verifying order {order_id}: {e}")
+                time.sleep(poll_interval)
+
+        # Timeout reached
+        logger.warning(f"Order {order_id} verification timeout (last status: {last_status})")
+        return (False, 0.0, f"Timeout - last status: {last_status}")
 
     def get_health(self) -> Dict[str, Any]:
         """Get health check data.

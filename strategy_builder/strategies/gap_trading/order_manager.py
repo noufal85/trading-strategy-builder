@@ -52,6 +52,7 @@ class OrderResponse:
         fill_price: Actual fill price (if filled)
         fill_quantity: Number of shares filled
         timestamp: Order timestamp
+        tag: Tradier order tag for tracking (format: gaptrading-{type}-{symbol}-{timestamp})
     """
     success: bool
     order_id: Optional[int] = None
@@ -65,6 +66,7 @@ class OrderResponse:
     fill_price: Optional[float] = None
     fill_quantity: int = 0
     timestamp: datetime = field(default_factory=datetime.now)
+    tag: Optional[str] = None
 
 
 @dataclass
@@ -177,27 +179,30 @@ class OrderManager:
         self,
         signal: Any,
         position_size: Any,
-        use_oto: bool = True
+        use_oto: bool = False
     ) -> ExecutionResult:
         """Execute a trade signal with full lifecycle.
 
-        Flow (OTO mode - default):
-        1. Check buying power
-        2. Place OTO order (entry + stop in single API call)
-        3. Wait for entry fill
-        4. Record in database
-
-        Flow (Legacy mode - use_oto=False):
+        Flow (Separate orders mode - default):
         1. Check buying power
         2. Place entry order (market)
         3. Wait for fill
         4. Place stop-loss order separately
         5. Record in database
 
+        Flow (OTO mode - use_oto=True):
+        1. Check buying power
+        2. Place OTO order (entry + stop in single API call)
+        3. Wait for entry fill
+        4. Record in database
+
+        Note: OTO orders are rejected by Tradier sandbox, so separate orders
+        is the default mode for compatibility.
+
         Args:
             signal: TradeSignal from signal generator
             position_size: PositionSize from position sizer
-            use_oto: Use OTO (One-Triggers-Other) orders (default True)
+            use_oto: Use OTO (One-Triggers-Other) orders (default False)
 
         Returns:
             ExecutionResult with order details
@@ -468,7 +473,7 @@ class OrderManager:
 
             logger.info(
                 f"Entry order placed: {side} {shares} {symbol}, "
-                f"order_id={order.id}"
+                f"order_id={order.id}, tag={tag}"
             )
 
             return OrderResponse(
@@ -479,7 +484,8 @@ class OrderManager:
                 quantity=shares,
                 order_type='market',
                 status=order.status.value,
-                message="Entry order placed successfully"
+                message="Entry order placed successfully",
+                tag=tag
             )
 
         except Exception as e:
@@ -489,7 +495,8 @@ class OrderManager:
                 symbol=symbol,
                 side=side,
                 quantity=shares,
-                message=str(e)
+                message=str(e),
+                tag=tag
             )
 
     def place_stop_order(
@@ -536,7 +543,7 @@ class OrderManager:
 
             logger.info(
                 f"Stop order placed: {side} {shares} {symbol} @ ${stop_price:.2f}, "
-                f"order_id={order.id}"
+                f"order_id={order.id}, tag={tag}"
             )
 
             return OrderResponse(
@@ -548,7 +555,8 @@ class OrderManager:
                 order_type='stop',
                 price=stop_price,
                 status=order.status.value,
-                message="Stop order placed successfully"
+                message="Stop order placed successfully",
+                tag=tag
             )
 
         except Exception as e:
@@ -559,7 +567,8 @@ class OrderManager:
                 side=side,
                 quantity=shares,
                 price=stop_price,
-                message=str(e)
+                message=str(e),
+                tag=tag
             )
 
     def close_position(
@@ -608,7 +617,7 @@ class OrderManager:
 
             logger.info(
                 f"Close order placed: {side} {shares} {symbol}, "
-                f"order_id={order.id}"
+                f"order_id={order.id}, tag={tag}"
             )
 
             return OrderResponse(
@@ -619,7 +628,8 @@ class OrderManager:
                 quantity=shares,
                 order_type='market',
                 status=order.status.value,
-                message="Position close order placed"
+                message="Position close order placed",
+                tag=tag
             )
 
         except Exception as e:
@@ -629,7 +639,8 @@ class OrderManager:
                 symbol=symbol,
                 side=side,
                 quantity=shares,
-                message=str(e)
+                message=str(e),
+                tag=tag
             )
 
     def cancel_order(self, order_id: int) -> bool:
@@ -809,11 +820,13 @@ class OrderManager:
             now = datetime.now()
 
             # First create the position record (orders reference it via FK)
+            # IMPORTANT: Always set strategy='gap_trading' to identify positions
+            # from this strategy vs other trading strategies
             insert_position_sql = """
                 INSERT INTO gap_trading.positions (
                     trade_date, symbol, direction, shares, entry_price, entry_time,
-                    stop_loss, status, signal_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    stop_loss, status, signal_id, strategy
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING position_id
             """
 
@@ -826,18 +839,20 @@ class OrderManager:
                 now,
                 stop_order.price if stop_order else None,
                 'OPEN',
-                getattr(signal, 'id', None)
+                getattr(signal, 'id', None),
+                'gap_trading'  # Strategy identifier for filtering
             ))
             position_id = cursor.fetchone()[0]
 
             # Insert into orders table - entry order
+            # Include tag for broker verification/reconciliation
             insert_order_sql = """
                 INSERT INTO gap_trading.orders (
                     trade_date, symbol, tradier_order_id, order_type, side,
                     order_class, quantity, limit_price, stop_price, status,
                     fill_price, filled_quantity, filled_at, related_position_id,
-                    related_signal_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    related_signal_id, tag
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
 
@@ -857,7 +872,8 @@ class OrderManager:
                 entry_order.fill_quantity,
                 now if entry_order.fill_quantity else None,
                 position_id,
-                getattr(signal, 'id', None)
+                getattr(signal, 'id', None),
+                entry_order.tag  # Tag for broker reconciliation
             ))
             entry_db_id = cursor.fetchone()[0]
 
@@ -885,7 +901,8 @@ class OrderManager:
                     stop_order.fill_quantity,
                     None,  # filled_at (not filled yet)
                     position_id,
-                    getattr(signal, 'id', None)
+                    getattr(signal, 'id', None),
+                    stop_order.tag  # Tag for broker reconciliation
                 ))
                 stop_db_id = cursor.fetchone()[0]
 
