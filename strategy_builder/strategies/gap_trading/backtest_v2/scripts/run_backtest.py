@@ -41,84 +41,100 @@ from strategy_builder.strategies.gap_trading.backtest_v2 import (
 logger = logging.getLogger(__name__)
 
 
+class TradeLogFilter(logging.Filter):
+    """Filter to only allow logs from main backtest script."""
+
+    def filter(self, record):
+        # Only allow logs from __main__ (this script)
+        return record.name == '__main__'
+
+
 def setup_logging(log_file: str = None, verbose: bool = False) -> None:
     """Configure logging with optional file output.
 
     Args:
         log_file: Path to log file. If None, logs only to console.
         verbose: If True, sets DEBUG level logging.
+
+    The file logger only captures trade-related logs from this script,
+    filtering out noisy data fetching and API call logs.
     """
     log_level = logging.DEBUG if verbose else logging.INFO
 
-    # Detailed format for file logging
-    file_format = logging.Formatter(
-        '%(asctime)s | %(levelname)-8s | %(name)s | %(funcName)s:%(lineno)d | %(message)s',
+    # Clean format for trade logging (no module names, just timestamp and message)
+    trade_format = logging.Formatter(
+        '%(asctime)s | %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # Simpler format for console
-    console_format = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    # Console format (simpler)
+    console_format = logging.Formatter('%(message)s')
 
-    # Get root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
+    # Get our script's logger only
+    script_logger = logging.getLogger(__name__)
+    script_logger.setLevel(log_level)
+    script_logger.handlers.clear()
+    script_logger.propagate = False  # Don't propagate to root logger
 
-    # Clear existing handlers
-    root_logger.handlers.clear()
-
-    # Console handler (always)
+    # Console handler for script logger
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(log_level)
     console_handler.setFormatter(console_format)
-    root_logger.addHandler(console_handler)
+    script_logger.addHandler(console_handler)
 
-    # File handler (if specified)
+    # Suppress all other loggers (set to CRITICAL to hide everything)
+    logging.getLogger().setLevel(logging.CRITICAL)  # Root logger
+
+    # File handler (if specified) - only for trade logs
     if log_file:
-        # Create log directory if needed
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Rotating file handler (10MB max, keep 5 backups)
         file_handler = RotatingFileHandler(
             log_file,
-            maxBytes=10*1024*1024,  # 10MB
+            maxBytes=10*1024*1024,
             backupCount=5,
             encoding='utf-8'
         )
-        file_handler.setLevel(logging.DEBUG)  # Always capture DEBUG in file
-        file_handler.setFormatter(file_format)
-        root_logger.addHandler(file_handler)
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(trade_format)
+        file_handler.addFilter(TradeLogFilter())  # Only __main__ logs
+        script_logger.addHandler(file_handler)
 
-        logger.info(f"Logging to file: {log_file}")
+        script_logger.info(f"Trade log file: {log_file}")
 
 
 def log_trade_detail(trade, trade_num: int, total_trades: int) -> None:
-    """Log detailed trade information."""
-    logger.info("=" * 70)
-    logger.info(f"TRADE {trade_num}/{total_trades}: {trade.symbol}")
-    logger.info("=" * 70)
-    logger.info(f"  Trade Date:    {trade.trade_date}")
-    logger.info(f"  Direction:     {trade.direction}")
-    logger.info(f"  Entry Time:    {trade.entry_time}")
-    logger.info(f"  Entry Price:   ${trade.entry_price:.4f}")
-    logger.info(f"  Shares:        {trade.shares}")
-    logger.info(f"  Position Size: ${trade.entry_price * trade.shares:,.2f}")
-    if hasattr(trade, 'stop_price') and trade.stop_price:
-        logger.info(f"  Stop Price:    ${trade.stop_price:.4f}")
-    logger.info(f"  Exit Time:     {trade.exit_time}")
-    logger.info(f"  Exit Price:    ${trade.exit_price:.4f}")
-    logger.info(f"  Exit Reason:   {trade.exit_reason}")
-    logger.info(f"  P&L:           ${trade.pnl:+,.2f} ({trade.pnl_pct:+.2f}%)")
-    logger.info(f"  Gap %:         {trade.gap_pct:+.2f}%")
+    """Log detailed trade information with market times."""
+    # Format: TRADE #N | DATE | SYMBOL | DIRECTION
+    logger.info("")
+    logger.info(f"TRADE #{trade_num}/{total_trades} | {trade.trade_date} | {trade.symbol} | {trade.direction}")
+    logger.info("-" * 60)
+
+    # Key decision parameters
+    logger.info(f"  Gap: {trade.gap_pct:+.2f}%")
     if hasattr(trade, 'atr') and trade.atr:
-        logger.info(f"  ATR:           ${trade.atr:.4f}")
+        logger.info(f"  ATR: ${trade.atr:.2f}")
     if hasattr(trade, 'risk_tier') and trade.risk_tier:
-        logger.info(f"  Risk Tier:     {trade.risk_tier}")
+        logger.info(f"  Risk Tier: {trade.risk_tier}")
+
+    # Entry details (market time)
+    logger.info(f"  ENTRY @ {trade.entry_time} | Price: ${trade.entry_price:.2f} | Shares: {trade.shares}")
+    position_value = trade.entry_price * trade.shares
+    logger.info(f"  Position Value: ${position_value:,.2f}")
+    if hasattr(trade, 'stop_price') and trade.stop_price:
+        logger.info(f"  Stop Price: ${trade.stop_price:.2f}")
+
+    # Exit details (market time)
+    exit_reason = str(trade.exit_reason).replace('ExitReason.', '')
+    logger.info(f"  EXIT @ {trade.exit_time} | Price: ${trade.exit_price:.2f} | Reason: {exit_reason}")
+
+    # Result
+    result_emoji = "WIN" if trade.pnl > 0 else "LOSS"
+    logger.info(f"  RESULT: {result_emoji} | P&L: ${trade.pnl:+,.2f} ({trade.pnl_pct:+.2f}%)")
     if hasattr(trade, 'hold_duration_minutes') and trade.hold_duration_minutes:
-        logger.info(f"  Hold Duration: {trade.hold_duration_minutes} minutes")
-    logger.info("-" * 70)
+        logger.info(f"  Hold Duration: {trade.hold_duration_minutes} min")
+    logger.info("")
 
 
 def parse_args():
@@ -257,26 +273,18 @@ Examples:
 
 def run_standard_backtest(args) -> None:
     """Run standard single backtest."""
-    logger.info("=" * 70)
-    logger.info("GAP TRADING BACKTEST")
-    logger.info("=" * 70)
-
     # Parse dates
     start_date = datetime.strptime(args.start, '%Y-%m-%d').date()
     end_date = datetime.strptime(args.end, '%Y-%m-%d').date()
 
-    # Log configuration
-    logger.info("CONFIGURATION:")
-    logger.info(f"  Period:              {start_date} to {end_date}")
-    logger.info(f"  Initial Capital:     ${args.capital:,.2f}")
-    logger.info(f"  Symbols:             {args.symbols or 'Default universe'}")
-    logger.info(f"  Min Gap %:           {args.min_gap}%")
-    logger.info(f"  Max Gap %:           {args.max_gap}%")
-    logger.info(f"  Confirmation:        {args.confirmation_minutes} minutes after open")
-    logger.info(f"  Stop ATR Multiplier: {args.stop_multiplier}x")
-    logger.info(f"  Risk Tiers:          {'Enabled' if not args.no_risk_tiers else 'Disabled'}")
-    logger.info(f"  Minute Data:         {'Enabled' if not args.no_minute_data else 'Disabled'}")
-    logger.info("-" * 70)
+    # Log configuration header
+    logger.info("=" * 60)
+    logger.info("GAP TRADING BACKTEST")
+    logger.info("=" * 60)
+    logger.info(f"Period: {start_date} to {end_date}")
+    logger.info(f"Symbols: {args.symbols or 'Default universe'}")
+    logger.info(f"Capital: ${args.capital:,.0f} | Gap: {args.min_gap}-{args.max_gap}% | Confirm: {args.confirmation_minutes}min | Stop: {args.stop_multiplier}x ATR")
+    logger.info("=" * 60)
 
     # Create config
     config = BacktestConfig(
@@ -292,37 +300,28 @@ def run_standard_backtest(args) -> None:
         use_minute_data=not args.no_minute_data,
     )
 
-    # Create and run backtest
+    # Create and run backtest (no progress callback to reduce noise)
     engine = BacktestEngine(config, api_key=args.api_key)
+    logger.info("Loading data and running backtest...")
+    result = engine.run(args.symbols)
 
-    # Track daily stats for logging
-    daily_stats = {}
-
-    def progress(trade_date, day_num, total):
-        if args.verbose or day_num % 10 == 0:
-            logger.info(f"Processing {trade_date} ({day_num}/{total})")
-
-    logger.info("Starting backtest execution...")
-    result = engine.run(args.symbols, progress_callback=progress)
-
-    # Log detailed trade information
+    # Log detailed trade information (main purpose of file logging)
     if args.log_trades and result.trades:
         logger.info("")
-        logger.info("=" * 70)
-        logger.info("DETAILED TRADE LOG")
-        logger.info("=" * 70)
+        logger.info("=" * 60)
+        logger.info(f"TRADE LOG ({len(result.trades)} trades)")
+        logger.info("=" * 60)
         for i, trade in enumerate(result.trades, 1):
             log_trade_detail(trade, i, len(result.trades))
 
     # Log daily summary
     if result.trades:
-        logger.info("")
-        logger.info("=" * 70)
+        logger.info("=" * 60)
         logger.info("DAILY SUMMARY")
-        logger.info("=" * 70)
+        logger.info("=" * 60)
         trades_by_date = {}
         for trade in result.trades:
-            trade_date = trade.entry_time.date() if hasattr(trade.entry_time, 'date') else trade.entry_time
+            trade_date = trade.trade_date
             if trade_date not in trades_by_date:
                 trades_by_date[trade_date] = []
             trades_by_date[trade_date].append(trade)
@@ -334,41 +333,18 @@ def run_standard_backtest(args) -> None:
             cumulative_pnl += day_pnl
             winners = sum(1 for t in day_trades if t.pnl > 0)
             losers = sum(1 for t in day_trades if t.pnl < 0)
-            logger.info(
-                f"  {trade_date}: {len(day_trades)} trades, "
-                f"W:{winners}/L:{losers}, "
-                f"Day P&L: ${day_pnl:+,.2f}, "
-                f"Cumulative: ${cumulative_pnl:+,.2f}"
-            )
+            logger.info(f"{trade_date} | {len(day_trades)} trades | W:{winners} L:{losers} | Day: ${day_pnl:+,.2f} | Total: ${cumulative_pnl:+,.2f}")
 
-    # Log rejection analysis
-    if result.rejection_analysis:
-        logger.info("")
-        logger.info("=" * 70)
-        logger.info("SIGNAL REJECTION ANALYSIS")
-        logger.info("=" * 70)
-        total_rejected = sum(result.rejection_analysis.values())
-        for reason, count in sorted(result.rejection_analysis.items(), key=lambda x: -x[1]):
-            pct = (count / total_rejected * 100) if total_rejected > 0 else 0
-            logger.info(f"  {reason}: {count} ({pct:.1f}%)")
-
-    # Log final metrics
+    # Log final summary
     logger.info("")
-    logger.info("=" * 70)
-    logger.info("FINAL RESULTS")
-    logger.info("=" * 70)
+    logger.info("=" * 60)
+    logger.info("SUMMARY")
+    logger.info("=" * 60)
     if result.metrics:
         m = result.metrics
-        logger.info(f"  Total Return:    {m.total_return_pct:+.2f}%")
-        logger.info(f"  Final Equity:    ${m.final_equity:,.2f}")
-        logger.info(f"  Total Trades:    {m.total_trades}")
-        logger.info(f"  Win Rate:        {m.win_rate:.1f}%")
-        logger.info(f"  Profit Factor:   {m.profit_factor:.2f}")
-        logger.info(f"  Sharpe Ratio:    {m.sharpe_ratio:.2f}")
-        logger.info(f"  Max Drawdown:    {m.max_drawdown_pct:.2f}%")
-        logger.info(f"  Avg Trade:       ${m.avg_trade:,.2f}")
-        logger.info(f"  Largest Win:     ${m.largest_win:,.2f}")
-        logger.info(f"  Largest Loss:    ${m.largest_loss:,.2f}")
+        logger.info(f"Return: {m.total_return_pct:+.2f}% | Win Rate: {m.win_rate:.1f}% | Trades: {m.total_trades}")
+        logger.info(f"Profit Factor: {m.profit_factor:.2f} | Sharpe: {m.sharpe_ratio:.2f} | Max DD: {m.max_drawdown_pct:.2f}%")
+        logger.info(f"Avg Trade: ${m.avg_trade:,.2f} | Best: ${m.largest_win:,.2f} | Worst: ${m.largest_loss:,.2f}")
 
     # Print summary to console
     print(result.summary())
@@ -509,12 +485,6 @@ def main():
     # Setup logging with file output if requested
     setup_logging(log_file=args.log_file, verbose=args.verbose)
 
-    # Log startup info
-    logger.info("=" * 70)
-    logger.info("GAP TRADING BACKTEST SYSTEM")
-    logger.info(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info("=" * 70)
-
     try:
         if args.sweep:
             run_parameter_sweep(args)
@@ -524,9 +494,7 @@ def main():
             run_standard_backtest(args)
 
         logger.info("")
-        logger.info("=" * 70)
-        logger.info(f"Backtest completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info("=" * 70)
+        logger.info(f"Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     except KeyboardInterrupt:
         logger.warning("Backtest interrupted by user")
