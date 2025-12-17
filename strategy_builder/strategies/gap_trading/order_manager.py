@@ -1,6 +1,6 @@
 """Order Manager for Gap Trading Strategy.
 
-Handles order execution via Tradier broker including entry orders,
+Handles order execution via broker API (Alpaca/Tradier) including entry orders,
 stop-loss orders, and order lifecycle management.
 """
 
@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Optional, List, Dict, Any, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from stock_data_web.tradier import TradierClient
+    from stock_data_web.alpaca import AlpacaClient
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +110,11 @@ class SyncResult:
 class OrderManager:
     """Manages order execution for gap trading strategy.
 
-    Integrates with Tradier broker to place entry orders, stop-loss orders,
+    Integrates with broker API (Alpaca/Tradier) to place entry orders, stop-loss orders,
     and manage order lifecycle.
 
     Attributes:
-        tradier_client: TradierClient instance for broker operations
+        tradier_client: Broker client instance for operations (AlpacaClient or TradierClient)
         db_conn: Database connection for order tracking
         max_fill_wait: Maximum seconds to wait for order fill
         poll_interval: Seconds between fill status checks
@@ -123,7 +123,7 @@ class OrderManager:
 
     def __init__(
         self,
-        tradier_client: 'TradierClient',
+        tradier_client: 'AlpacaClient',
         db_conn: Any = None,
         max_fill_wait: int = 60,
         poll_interval: int = 2,
@@ -132,7 +132,7 @@ class OrderManager:
         """Initialize OrderManager.
 
         Args:
-            tradier_client: TradierClient instance
+            tradier_client: Broker client instance (AlpacaClient or TradierClient compatible)
             db_conn: Database connection (psycopg2 or SQLAlchemy)
             max_fill_wait: Max seconds to wait for order fill
             poll_interval: Seconds between fill status checks

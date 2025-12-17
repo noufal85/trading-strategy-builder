@@ -1065,31 +1065,31 @@ Check Tradier positions and verify DB state.
 
 
 def run_monitor(
-    tradier_api_key: Optional[str] = None,
-    tradier_account_id: Optional[str] = None,
+    api_key: Optional[str] = None,
+    api_secret: Optional[str] = None,
     db_connection_string: Optional[str] = None,
     check_interval: int = 60,
-    sandbox: bool = True
+    paper_trading: bool = True
 ):
     """Run the realtime monitor as a standalone process.
 
     Args:
-        tradier_api_key: Tradier API key (or from env)
-        tradier_account_id: Tradier account ID (or from env)
+        api_key: Broker API key (or from env)
+        api_secret: Broker API secret (or from env)
         db_connection_string: Database connection string
         check_interval: Seconds between checks
-        sandbox: Use Tradier sandbox
+        paper_trading: Use paper trading mode
     """
     import os
     import psycopg2
 
-    # Initialize Tradier client
-    from stock_data_web.tradier import TradierClient
+    # Initialize broker client (Alpaca)
+    from stock_data_web.alpaca import AlpacaClient
 
-    tradier = TradierClient(
-        api_key=tradier_api_key,
-        account_id=tradier_account_id,
-        sandbox=sandbox
+    broker_client = AlpacaClient(
+        api_key=api_key,
+        api_secret=api_secret,
+        paper_trading=paper_trading
     )
 
     # Initialize database connection
@@ -1102,7 +1102,7 @@ def run_monitor(
     # Create and run monitor
     config = MonitorConfig(check_interval=check_interval)
     monitor = RealtimeStopLossMonitor(
-        tradier_client=tradier,
+        tradier_client=broker_client,
         db_conn=db_conn,
         config=config
     )
@@ -1110,7 +1110,7 @@ def run_monitor(
     try:
         monitor.start()
     finally:
-        tradier.close()
+        broker_client.close()
         db_conn.close()
 
 
@@ -1119,8 +1119,8 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Gap Trading Stop-Loss Monitor')
     parser.add_argument('--interval', type=int, default=60, help='Check interval in seconds')
-    parser.add_argument('--sandbox', action='store_true', default=True, help='Use Tradier sandbox')
-    parser.add_argument('--live', action='store_true', help='Use Tradier live (production)')
+    parser.add_argument('--paper', action='store_true', default=True, help='Use paper trading')
+    parser.add_argument('--live', action='store_true', help='Use live trading (production)')
 
     args = parser.parse_args()
 
@@ -1131,5 +1131,5 @@ if __name__ == '__main__':
 
     run_monitor(
         check_interval=args.interval,
-        sandbox=not args.live
+        paper_trading=not args.live
     )
