@@ -90,6 +90,14 @@ python3 -m strategy_builder.strategies.gap_trading.backtest_v2.scripts.run_backt
     --start 2025-11-01 --end 2025-12-15 \
     --symbols SPY QQQ AAPL MSFT \
     --analyze-gaps
+
+# With detailed file logging
+python3 -m strategy_builder.strategies.gap_trading.backtest_v2.scripts.run_backtest \
+    --start 2025-11-01 --end 2025-12-15 \
+    --symbols SPY QQQ AAPL MSFT \
+    --log-file backtest.log \
+    --log-trades \
+    --verbose
 ```
 
 ### CLI Options
@@ -108,9 +116,11 @@ python3 -m strategy_builder.strategies.gap_trading.backtest_v2.scripts.run_backt
 | `--no-minute-data` | False | Use daily data only (faster) |
 | `--output` | None | Save results to JSON file |
 | `--trades-csv` | None | Save trades to CSV file |
+| `--log-file` | None | Log file path for detailed logging |
+| `--log-trades` | False | Log detailed information for each trade |
 | `--sweep` | False | Run parameter sweep |
 | `--analyze-gaps` | False | Run gap continuation analysis |
-| `--verbose` | False | Verbose output |
+| `--verbose` | False | Verbose/debug output |
 
 ### Output Metrics
 
