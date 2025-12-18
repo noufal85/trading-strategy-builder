@@ -40,6 +40,9 @@ from strategy_builder.strategies.gap_trading.backtest_v2 import (
 
 logger = logging.getLogger(__name__)
 
+# Default logs directory (relative to script location or current working dir)
+DEFAULT_LOGS_DIR = Path(__file__).parent.parent.parent.parent.parent.parent / 'logs'
+
 
 class TradeLogFilter(logging.Filter):
     """Filter to only allow logs from main backtest script."""
@@ -49,17 +52,38 @@ class TradeLogFilter(logging.Filter):
         return record.name == '__main__'
 
 
-def setup_logging(log_file: str = None, verbose: bool = False) -> None:
+def get_default_log_path() -> Path:
+    """Generate default log file path with timestamp.
+
+    Returns:
+        Path like: logs/backtest_20251217_143052.log
+    """
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return DEFAULT_LOGS_DIR / f'backtest_{timestamp}.log'
+
+
+def setup_logging(log_file: str = 'auto', verbose: bool = False) -> str:
     """Configure logging with optional file output.
 
     Args:
-        log_file: Path to log file. If None, logs only to console.
+        log_file: Path to log file, 'auto' for default, 'none' to disable file logging.
         verbose: If True, sets DEBUG level logging.
+
+    Returns:
+        The actual log file path used (or None if disabled).
 
     The file logger only captures trade-related logs from this script,
     filtering out noisy data fetching and API call logs.
     """
     log_level = logging.DEBUG if verbose else logging.INFO
+
+    # Determine actual log file path
+    actual_log_file = None
+    if log_file and log_file.lower() != 'none':
+        if log_file == 'auto':
+            actual_log_file = get_default_log_path()
+        else:
+            actual_log_file = Path(log_file)
 
     # Clean format for trade logging (no module names, just timestamp and message)
     trade_format = logging.Formatter(
@@ -86,12 +110,11 @@ def setup_logging(log_file: str = None, verbose: bool = False) -> None:
     logging.getLogger().setLevel(logging.CRITICAL)  # Root logger
 
     # File handler (if specified) - only for trade logs
-    if log_file:
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+    if actual_log_file:
+        actual_log_file.parent.mkdir(parents=True, exist_ok=True)
 
         file_handler = RotatingFileHandler(
-            log_file,
+            str(actual_log_file),
             maxBytes=10*1024*1024,
             backupCount=5,
             encoding='utf-8'
@@ -101,7 +124,9 @@ def setup_logging(log_file: str = None, verbose: bool = False) -> None:
         file_handler.addFilter(TradeLogFilter())  # Only __main__ logs
         script_logger.addHandler(file_handler)
 
-        script_logger.info(f"Trade log file: {log_file}")
+        script_logger.info(f"Log file: {actual_log_file}")
+
+    return str(actual_log_file) if actual_log_file else None
 
 
 def log_trade_detail(trade, trade_num: int, total_trades: int) -> None:
@@ -248,7 +273,8 @@ Examples:
     parser.add_argument(
         '--log-file',
         type=str,
-        help='Log file path for detailed logging (e.g., backtest.log)'
+        default='auto',
+        help='Log file path (default: logs/backtest_TIMESTAMP.log, use "none" to disable)'
     )
     parser.add_argument(
         '--log-trades',
