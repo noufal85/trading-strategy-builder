@@ -159,7 +159,7 @@ class RealtimeStopLossMonitor:
 
     def __init__(
         self,
-        tradier_client: Any,
+        broker_client: Any,
         db_conn: Any,
         quote_provider: Any = None,
         config: Optional[MonitorConfig] = None,
@@ -169,14 +169,14 @@ class RealtimeStopLossMonitor:
         """Initialize the monitor.
 
         Args:
-            tradier_client: TradierClient for order execution
+            broker_client: Broker client for order execution (AlpacaClient)
             db_conn: Database connection
-            quote_provider: FMP or other quote source (optional, uses Tradier if None)
+            quote_provider: FMP or other quote source (optional, uses broker if None)
             config: Monitor configuration
             on_stop_triggered: Callback when stop is triggered
             on_eod_close: Callback for EOD close
         """
-        self.tradier_client = tradier_client
+        self.broker_client = broker_client
         self.db_conn = db_conn
         self.quote_provider = quote_provider
         self.config = config or MonitorConfig()
@@ -388,7 +388,7 @@ class RealtimeStopLossMonitor:
             return {}
 
         try:
-            # Use quote provider if available, otherwise Tradier
+            # Use quote provider if available, otherwise broker
             if self.quote_provider:
                 quotes_list = self.quote_provider.get_batch_quotes(symbols)
                 return {
@@ -396,7 +396,7 @@ class RealtimeStopLossMonitor:
                     for q in quotes_list
                 }
             else:
-                quotes_list = self.tradier_client.get_quotes(symbols)
+                quotes_list = self.broker_client.get_quotes(symbols)
                 return {
                     q.symbol: {'price': q.last, 'bid': q.bid, 'ask': q.ask}
                     for q in quotes_list
@@ -441,7 +441,7 @@ class RealtimeStopLossMonitor:
 
         try:
             order_manager = OrderManager(
-                tradier_client=self.tradier_client,
+                broker_client=self.broker_client,
                 db_conn=self.db_conn
             )
 
@@ -628,7 +628,7 @@ class RealtimeStopLossMonitor:
             return {'closed': 0, 'failed': 0, 'positions': []}
 
         order_manager = OrderManager(
-            tradier_client=self.tradier_client,
+            broker_client=self.broker_client,
             db_conn=self.db_conn
         )
 
@@ -932,7 +932,7 @@ Reason: {reason.value}
 
         message += """
 ⚠️ *Action Required*: Manual close may be needed.
-Check Tradier positions and verify DB state.
+Check broker positions and verify DB state.
 """
 
         logger.critical(f"EOD FAILURE ALERT:\n{message}")
@@ -985,7 +985,7 @@ Check Tradier positions and verify DB state.
         This ensures DB is only updated after broker confirms execution.
 
         Args:
-            order_id: Tradier order ID
+            order_id: Broker order ID
             expected_tag: Expected order tag for verification
             timeout: Max seconds to wait for fill
             poll_interval: Seconds between status checks
@@ -998,7 +998,7 @@ Check Tradier positions and verify DB state.
 
         while time.time() - start_time < timeout:
             try:
-                order = self.tradier_client.get_order(order_id)
+                order = self.broker_client.get_order(order_id)
 
                 if order is None:
                     return (False, 0.0, f"Order {order_id} not found at broker")
@@ -1102,7 +1102,7 @@ def run_monitor(
     # Create and run monitor
     config = MonitorConfig(check_interval=check_interval)
     monitor = RealtimeStopLossMonitor(
-        tradier_client=broker_client,
+        broker_client=broker_client,
         db_conn=db_conn,
         config=config
     )

@@ -1,7 +1,12 @@
 """Order Manager for Gap Trading Strategy.
 
-Handles order execution via broker API (Alpaca/Tradier) including entry orders,
+Handles order execution via broker API (Alpaca) including entry orders,
 stop-loss orders, and order lifecycle management.
+
+Features:
+- Retry with exponential backoff for transient failures
+- Circuit breaker pattern to prevent cascading failures
+- Comprehensive error categorization and handling
 """
 
 import logging
@@ -10,6 +15,22 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional, List, Dict, Any, Tuple, TYPE_CHECKING
+
+from .error_handling import (
+    ErrorCategory,
+    GapTradingError,
+    NetworkError,
+    AuthenticationError,
+    BusinessError,
+    InsufficientFundsError,
+    RateLimitError,
+    CircuitOpenError,
+    retry_with_backoff,
+    with_error_handling,
+    get_broker_circuit_breaker,
+    wrap_exception,
+    CircuitBreaker
+)
 
 if TYPE_CHECKING:
     from stock_data_web.alpaca import AlpacaClient
@@ -41,7 +62,7 @@ class OrderResponse:
 
     Attributes:
         success: Whether order was placed successfully
-        order_id: Tradier order ID (if successful)
+        order_id: Broker order ID (if successful)
         symbol: Stock symbol
         side: Order side (buy, sell, etc.)
         quantity: Number of shares
@@ -52,7 +73,7 @@ class OrderResponse:
         fill_price: Actual fill price (if filled)
         fill_quantity: Number of shares filled
         timestamp: Order timestamp
-        tag: Tradier order tag for tracking (format: gaptrading-{type}-{symbol}-{timestamp})
+        tag: Order tag for tracking (format: gaptrading-{type}-{symbol}-{timestamp})
     """
     success: bool
     order_id: Optional[int] = None
@@ -110,57 +131,83 @@ class SyncResult:
 class OrderManager:
     """Manages order execution for gap trading strategy.
 
-    Integrates with broker API (Alpaca/Tradier) to place entry orders, stop-loss orders,
+    Integrates with broker API (Alpaca) to place entry orders, stop-loss orders,
     and manage order lifecycle.
 
+    Features:
+    - Retry with exponential backoff for transient failures
+    - Circuit breaker to prevent cascading failures after repeated errors
+    - Comprehensive error categorization (auth, network, business, etc.)
+
     Attributes:
-        tradier_client: Broker client instance for operations (AlpacaClient or TradierClient)
+        broker_client: Broker client instance for operations (AlpacaClient)
         db_conn: Database connection for order tracking
         max_fill_wait: Maximum seconds to wait for order fill
         poll_interval: Seconds between fill status checks
         tag_prefix: Prefix for order tags
+        circuit_breaker: Circuit breaker for broker API protection
     """
 
     def __init__(
         self,
-        tradier_client: 'AlpacaClient',
+        broker_client: 'AlpacaClient',
         db_conn: Any = None,
         max_fill_wait: int = 60,
         poll_interval: int = 2,
-        tag_prefix: str = 'gaptrading'
+        tag_prefix: str = 'gaptrading',
+        circuit_breaker: Optional[CircuitBreaker] = None
     ):
         """Initialize OrderManager.
 
         Args:
-            tradier_client: Broker client instance (AlpacaClient or TradierClient compatible)
+            broker_client: Broker client instance (AlpacaClient)
             db_conn: Database connection (psycopg2 or SQLAlchemy)
             max_fill_wait: Max seconds to wait for order fill
             poll_interval: Seconds between fill status checks
             tag_prefix: Prefix for order tags
+            circuit_breaker: Optional circuit breaker (uses global if None)
         """
-        self.tradier_client = tradier_client
+        self.broker_client = broker_client
         self.db_conn = db_conn
         self.max_fill_wait = max_fill_wait
         self.poll_interval = poll_interval
         self.tag_prefix = tag_prefix
+        self.circuit_breaker = circuit_breaker or get_broker_circuit_breaker()
 
         logger.info(
             f"OrderManager initialized (max_wait={max_fill_wait}s, "
-            f"poll={poll_interval}s)"
+            f"poll={poll_interval}s, circuit_breaker={self.circuit_breaker.name})"
         )
 
     def check_buying_power(self, required_amount: float) -> Tuple[bool, float]:
         """Check if sufficient buying power is available.
+
+        Uses circuit breaker to prevent cascading failures if broker API
+        is experiencing issues.
 
         Args:
             required_amount: Amount needed for trade
 
         Returns:
             Tuple of (has_sufficient, available_amount)
+
+        Raises:
+            CircuitOpenError: If circuit breaker is open
+            GapTradingError: If broker API call fails
         """
         try:
-            balance = self.tradier_client.get_balance()
+            # Check circuit breaker first
+            if self.circuit_breaker.is_open:
+                raise CircuitOpenError(
+                    f"Circuit breaker '{self.circuit_breaker.name}' is open - "
+                    "broker API calls are blocked"
+                )
+
+            balance = self.broker_client.get_balance()
             available = balance.available_for_trading
+
+            # Record success
+            self.circuit_breaker.record_success()
 
             has_sufficient = available >= required_amount
 
@@ -171,9 +218,14 @@ class OrderManager:
 
             return has_sufficient, available
 
+        except CircuitOpenError:
+            raise  # Re-raise circuit open errors
         except Exception as e:
-            logger.error(f"Failed to check buying power: {e}")
-            return False, 0.0
+            # Record failure and wrap the exception
+            self.circuit_breaker.record_failure(e)
+            wrapped = wrap_exception(e)
+            logger.error(f"Failed to check buying power: {wrapped}")
+            raise wrapped
 
     def execute_signal(
         self,
@@ -196,7 +248,7 @@ class OrderManager:
         3. Wait for entry fill
         4. Record in database
 
-        Note: OTO orders are rejected by Tradier sandbox, so separate orders
+        Note: OTO orders may have limited support, so separate orders
         is the default mode for compatibility.
 
         Args:
@@ -260,12 +312,12 @@ class OrderManager:
                 error=f"Invalid signal type: {signal_type}"
             )
 
-        # Use hyphens in tag - Tradier API rejects underscores
+        # Use hyphens in tag for compatibility with broker APIs
         tag = f"{self.tag_prefix}-oto-{symbol}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
         try:
             # Place OTO order (entry + stop in single call)
-            oto_result = self.tradier_client.place_oto_order(
+            oto_result = self.broker_client.place_oto_order(
                 symbol=symbol,
                 entry_side=entry_side,
                 quantity=shares,
@@ -306,7 +358,7 @@ class OrderManager:
                 message="OTO entry filled"
             )
 
-            # Create stop order response (stop is automatically placed by Tradier)
+            # Create stop order response (stop is automatically placed by broker)
             stop_order_id = oto_result.get('stop_order_id')
             stop_response = OrderResponse(
                 success=True,
@@ -436,14 +488,16 @@ class OrderManager:
         self,
         symbol: str,
         signal_type: str,
-        shares: int
+        shares: int,
+        max_retries: int = 2
     ) -> OrderResponse:
-        """Place entry market order.
+        """Place entry market order with retry and circuit breaker protection.
 
         Args:
             symbol: Stock ticker
             signal_type: 'BUY' or 'SELL_SHORT'
             shares: Number of shares
+            max_retries: Maximum retry attempts for transient failures
 
         Returns:
             OrderResponse with order details
@@ -460,59 +514,94 @@ class OrderManager:
                 message=f"Invalid signal type: {signal_type}"
             )
 
-        # Use hyphens instead of underscores - Tradier API rejects underscores in tags
+        # Use hyphens in tag for compatibility with broker APIs
         tag = f"{self.tag_prefix}-entry-{symbol}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
-        try:
-            order = self.tradier_client.place_market_order(
-                symbol=symbol,
-                side=side,
-                quantity=shares,
-                tag=tag
-            )
-
-            logger.info(
-                f"Entry order placed: {side} {shares} {symbol}, "
-                f"order_id={order.id}, tag={tag}"
-            )
-
-            return OrderResponse(
-                success=True,
-                order_id=order.id,
-                symbol=symbol,
-                side=side,
-                quantity=shares,
-                order_type='market',
-                status=order.status.value,
-                message="Entry order placed successfully",
-                tag=tag
-            )
-
-        except Exception as e:
-            logger.error(f"Entry order failed for {symbol}: {e}")
+        # Check circuit breaker
+        if self.circuit_breaker.is_open:
+            logger.warning(f"Circuit breaker open - entry order blocked for {symbol}")
             return OrderResponse(
                 success=False,
                 symbol=symbol,
                 side=side,
                 quantity=shares,
-                message=str(e),
+                message=f"Circuit breaker open - broker API calls blocked",
                 tag=tag
             )
+
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                order = self.broker_client.place_market_order(
+                    symbol=symbol,
+                    side=side,
+                    quantity=shares,
+                    tag=tag
+                )
+
+                # Record success
+                self.circuit_breaker.record_success()
+
+                logger.info(
+                    f"Entry order placed: {side} {shares} {symbol}, "
+                    f"order_id={order.id}, tag={tag}"
+                )
+
+                return OrderResponse(
+                    success=True,
+                    order_id=order.id,
+                    symbol=symbol,
+                    side=side,
+                    quantity=shares,
+                    order_type='market',
+                    status=order.status.value,
+                    message="Entry order placed successfully",
+                    tag=tag
+                )
+
+            except Exception as e:
+                last_error = e
+                wrapped = wrap_exception(e)
+                self.circuit_breaker.record_failure(e)
+
+                # Check if retryable
+                if not wrapped.retryable or attempt >= max_retries:
+                    logger.error(f"Entry order failed for {symbol}: {wrapped}")
+                    break
+
+                # Calculate backoff delay
+                delay = min(2 ** attempt, 30)
+                logger.warning(
+                    f"Entry order attempt {attempt}/{max_retries} failed: {e}. "
+                    f"Retrying in {delay}s..."
+                )
+                time.sleep(delay)
+
+        return OrderResponse(
+            success=False,
+            symbol=symbol,
+            side=side,
+            quantity=shares,
+            message=str(last_error) if last_error else "Unknown error",
+            tag=tag
+        )
 
     def place_stop_order(
         self,
         symbol: str,
         signal_type: str,
         shares: int,
-        stop_price: float
+        stop_price: float,
+        max_retries: int = 2
     ) -> OrderResponse:
-        """Place stop-loss order.
+        """Place stop-loss order with retry and circuit breaker protection.
 
         Args:
             symbol: Stock ticker
             signal_type: Original signal type (determines exit side)
             shares: Number of shares
             stop_price: Stop trigger price
+            max_retries: Maximum retry attempts for transient failures
 
         Returns:
             OrderResponse with order details
@@ -529,64 +618,101 @@ class OrderManager:
                 message=f"Invalid signal type: {signal_type}"
             )
 
-        # Use hyphens instead of underscores - Tradier API rejects underscores in tags
+        # Use hyphens in tag for compatibility with broker APIs
         tag = f"{self.tag_prefix}-stop-{symbol}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
-        try:
-            order = self.tradier_client.place_stop_order(
-                symbol=symbol,
-                side=side,
-                quantity=shares,
-                stop_price=stop_price,
-                tag=tag
-            )
-
-            logger.info(
-                f"Stop order placed: {side} {shares} {symbol} @ ${stop_price:.2f}, "
-                f"order_id={order.id}, tag={tag}"
-            )
-
-            return OrderResponse(
-                success=True,
-                order_id=order.id,
-                symbol=symbol,
-                side=side,
-                quantity=shares,
-                order_type='stop',
-                price=stop_price,
-                status=order.status.value,
-                message="Stop order placed successfully",
-                tag=tag
-            )
-
-        except Exception as e:
-            logger.error(f"Stop order failed for {symbol}: {e}")
+        # Check circuit breaker
+        if self.circuit_breaker.is_open:
+            logger.warning(f"Circuit breaker open - stop order blocked for {symbol}")
             return OrderResponse(
                 success=False,
                 symbol=symbol,
                 side=side,
                 quantity=shares,
                 price=stop_price,
-                message=str(e),
+                message="Circuit breaker open - broker API calls blocked",
                 tag=tag
             )
+
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                order = self.broker_client.place_stop_order(
+                    symbol=symbol,
+                    side=side,
+                    quantity=shares,
+                    stop_price=stop_price,
+                    tag=tag
+                )
+
+                # Record success
+                self.circuit_breaker.record_success()
+
+                logger.info(
+                    f"Stop order placed: {side} {shares} {symbol} @ ${stop_price:.2f}, "
+                    f"order_id={order.id}, tag={tag}"
+                )
+
+                return OrderResponse(
+                    success=True,
+                    order_id=order.id,
+                    symbol=symbol,
+                    side=side,
+                    quantity=shares,
+                    order_type='stop',
+                    price=stop_price,
+                    status=order.status.value,
+                    message="Stop order placed successfully",
+                    tag=tag
+                )
+
+            except Exception as e:
+                last_error = e
+                wrapped = wrap_exception(e)
+                self.circuit_breaker.record_failure(e)
+
+                # Check if retryable
+                if not wrapped.retryable or attempt >= max_retries:
+                    logger.error(f"Stop order failed for {symbol}: {wrapped}")
+                    break
+
+                # Calculate backoff delay
+                delay = min(2 ** attempt, 30)
+                logger.warning(
+                    f"Stop order attempt {attempt}/{max_retries} failed: {e}. "
+                    f"Retrying in {delay}s..."
+                )
+                time.sleep(delay)
+
+        return OrderResponse(
+            success=False,
+            symbol=symbol,
+            side=side,
+            quantity=shares,
+            price=stop_price,
+            message=str(last_error) if last_error else "Unknown error",
+            tag=tag
+        )
 
     def close_position(
         self,
         symbol: str,
         shares: int,
         is_long: bool,
-        stop_order_id: Optional[int] = None
+        stop_order_id: Optional[int] = None,
+        max_retries: int = 3
     ) -> OrderResponse:
-        """Close an open position.
+        """Close an open position with retry and circuit breaker protection.
 
         Cancels existing stop order and places market order to close.
+        Uses more retries than entry/stop orders because closing is critical.
 
         Args:
             symbol: Stock ticker
             shares: Number of shares to close
             is_long: True if long position, False if short
             stop_order_id: Stop order to cancel (if any)
+            max_retries: Maximum retry attempts (default 3 for critical closes)
 
         Returns:
             OrderResponse with close order details
@@ -604,81 +730,143 @@ class OrderManager:
         else:
             side = 'buy_to_cover'
 
-        # Use hyphens instead of underscores - Tradier API rejects underscores in tags
+        # Use hyphens in tag for compatibility with broker APIs
         tag = f"{self.tag_prefix}-close-{symbol}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
-        try:
-            order = self.tradier_client.place_market_order(
-                symbol=symbol,
-                side=side,
-                quantity=shares,
-                tag=tag
+        # Check circuit breaker - but for closes we may want to try anyway
+        # as closing positions is critical. Log warning but don't block.
+        if self.circuit_breaker.is_open:
+            logger.warning(
+                f"Circuit breaker open but attempting close for {symbol} "
+                f"(closing is critical operation)"
             )
 
-            logger.info(
-                f"Close order placed: {side} {shares} {symbol}, "
-                f"order_id={order.id}, tag={tag}"
-            )
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                order = self.broker_client.place_market_order(
+                    symbol=symbol,
+                    side=side,
+                    quantity=shares,
+                    tag=tag
+                )
 
-            return OrderResponse(
-                success=True,
-                order_id=order.id,
-                symbol=symbol,
-                side=side,
-                quantity=shares,
-                order_type='market',
-                status=order.status.value,
-                message="Position close order placed",
-                tag=tag
-            )
+                # Record success
+                self.circuit_breaker.record_success()
 
-        except Exception as e:
-            logger.error(f"Close order failed for {symbol}: {e}")
-            return OrderResponse(
-                success=False,
-                symbol=symbol,
-                side=side,
-                quantity=shares,
-                message=str(e),
-                tag=tag
-            )
+                logger.info(
+                    f"Close order placed: {side} {shares} {symbol}, "
+                    f"order_id={order.id}, tag={tag}"
+                )
 
-    def cancel_order(self, order_id: int) -> bool:
-        """Cancel an open order.
+                return OrderResponse(
+                    success=True,
+                    order_id=order.id,
+                    symbol=symbol,
+                    side=side,
+                    quantity=shares,
+                    order_type='market',
+                    status=order.status.value,
+                    message="Position close order placed",
+                    tag=tag
+                )
+
+            except Exception as e:
+                last_error = e
+                wrapped = wrap_exception(e)
+                self.circuit_breaker.record_failure(e)
+
+                # For closes, we retry even non-retryable errors (except auth)
+                # because closing positions is critical
+                if wrapped.category == ErrorCategory.AUTH_ERROR:
+                    logger.error(f"Authentication error closing {symbol}: {wrapped}")
+                    break
+
+                if attempt < max_retries:
+                    # Calculate backoff delay
+                    delay = min(2 ** attempt, 30)
+                    logger.warning(
+                        f"Close attempt {attempt}/{max_retries} failed: {e}. "
+                        f"Retrying in {delay}s..."
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(
+                        f"All {max_retries} close attempts failed for {symbol}: {e}"
+                    )
+
+        return OrderResponse(
+            success=False,
+            symbol=symbol,
+            side=side,
+            quantity=shares,
+            message=str(last_error) if last_error else "Unknown error",
+            tag=tag
+        )
+
+    def cancel_order(self, order_id: int, max_retries: int = 2) -> bool:
+        """Cancel an open order with retry support.
 
         Args:
-            order_id: Tradier order ID
+            order_id: Broker order ID
+            max_retries: Maximum retry attempts
 
         Returns:
             True if cancelled successfully
         """
-        try:
-            result = self.tradier_client.cancel_order(order_id)
-            logger.info(f"Order {order_id} cancelled: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"Failed to cancel order {order_id}: {e}")
-            return False
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                result = self.broker_client.cancel_order(order_id)
+                self.circuit_breaker.record_success()
+                logger.info(f"Order {order_id} cancelled: {result}")
+                return result
+
+            except Exception as e:
+                last_error = e
+                wrapped = wrap_exception(e)
+                self.circuit_breaker.record_failure(e)
+
+                if not wrapped.retryable or attempt >= max_retries:
+                    logger.error(f"Failed to cancel order {order_id}: {e}")
+                    break
+
+                delay = min(2 ** attempt, 10)
+                logger.warning(
+                    f"Cancel attempt {attempt}/{max_retries} failed: {e}. "
+                    f"Retrying in {delay}s..."
+                )
+                time.sleep(delay)
+
+        return False
 
     def get_order_status(self, order_id: int) -> Optional[Any]:
-        """Get current status of an order.
+        """Get current status of an order with circuit breaker protection.
 
         Args:
-            order_id: Tradier order ID
+            order_id: Broker order ID
 
         Returns:
-            TradierOrder object or None
+            Order object or None
         """
         try:
-            return self.tradier_client.get_order(order_id)
+            if self.circuit_breaker.is_open:
+                logger.warning(f"Circuit breaker open - cannot get order {order_id}")
+                return None
+
+            order = self.broker_client.get_order(order_id)
+            self.circuit_breaker.record_success()
+            return order
+
         except Exception as e:
+            self.circuit_breaker.record_failure(e)
             logger.error(f"Failed to get order {order_id}: {e}")
             return None
 
     def sync_with_broker(self) -> SyncResult:
-        """Sync local database with broker state.
+        """Sync local database with broker state with circuit breaker protection.
 
-        Fetches current positions and orders from Tradier,
+        Fetches current positions and orders from broker (Alpaca),
         compares with local database, and reports discrepancies.
 
         Returns:
@@ -690,14 +878,27 @@ class OrderManager:
                 discrepancies=[{"type": "error", "message": "No database connection"}]
             )
 
+        # Check circuit breaker
+        if self.circuit_breaker.is_open:
+            return SyncResult(
+                success=False,
+                discrepancies=[{
+                    "type": "circuit_open",
+                    "message": f"Circuit breaker '{self.circuit_breaker.name}' is open"
+                }]
+            )
+
         discrepancies = []
 
         try:
             # Get broker positions
-            broker_positions = self.tradier_client.get_positions()
+            broker_positions = self.broker_client.get_positions()
 
             # Get broker orders
-            broker_orders = self.tradier_client.get_orders()
+            broker_orders = self.broker_client.get_orders()
+
+            # Record success for broker API calls
+            self.circuit_breaker.record_success()
 
             # Get local positions from database
             local_positions = self._get_local_positions()
@@ -752,10 +953,16 @@ class OrderManager:
             )
 
         except Exception as e:
-            logger.error(f"Sync failed: {e}")
+            self.circuit_breaker.record_failure(e)
+            wrapped = wrap_exception(e)
+            logger.error(f"Sync failed: {wrapped}")
             return SyncResult(
                 success=False,
-                discrepancies=[{"type": "error", "message": str(e)}]
+                discrepancies=[{
+                    "type": "error",
+                    "category": wrapped.category.value,
+                    "message": str(e)
+                }]
             )
 
     def _wait_for_fill(self, order_id: int) -> Optional[Any]:
@@ -771,7 +978,7 @@ class OrderManager:
 
         while time.time() - start_time < self.max_fill_wait:
             try:
-                order = self.tradier_client.get_order(order_id)
+                order = self.broker_client.get_order(order_id)
 
                 if order.is_filled:
                     logger.info(
@@ -848,7 +1055,7 @@ class OrderManager:
             # Include tag for broker verification/reconciliation
             insert_order_sql = """
                 INSERT INTO gap_trading.orders (
-                    trade_date, symbol, tradier_order_id, order_type, side,
+                    trade_date, symbol, broker_order_id, order_type, side,
                     order_class, quantity, limit_price, stop_price, status,
                     fill_price, filled_quantity, filled_at, related_position_id,
                     related_signal_id, tag

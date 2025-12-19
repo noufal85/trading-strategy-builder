@@ -3,6 +3,11 @@
 Reconciles database state with actual broker (Alpaca) positions.
 Detects discrepancies and auto-fixes them with proper logging.
 
+Features:
+- Circuit breaker protection for broker API calls
+- Retry with exponential backoff for transient failures
+- Comprehensive error categorization
+
 Usage:
     from strategy_builder.strategies.gap_trading.position_sync import PositionSyncManager
 
@@ -11,10 +16,20 @@ Usage:
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Set, TYPE_CHECKING
 from enum import Enum
+
+from .error_handling import (
+    GapTradingError,
+    NetworkError,
+    CircuitOpenError,
+    get_broker_circuit_breaker,
+    wrap_exception,
+    CircuitBreaker
+)
 
 if TYPE_CHECKING:
     from stock_data_web.alpaca import AlpacaClient
@@ -101,6 +116,10 @@ class PositionSyncManager:
     - Auto-fixing discrepancies (marking closed, cancelling stops)
     - Logging sync operations to database
     - Sending alerts on significant desyncs
+
+    Features:
+    - Circuit breaker protection for broker API calls
+    - Retry with exponential backoff for transient failures
     """
 
     def __init__(
@@ -108,7 +127,8 @@ class PositionSyncManager:
         db_conn,
         broker_client: 'AlpacaClient',
         auto_fix: bool = True,
-        dry_run: bool = False
+        dry_run: bool = False,
+        circuit_breaker: Optional[CircuitBreaker] = None
     ):
         """Initialize the sync manager.
 
@@ -117,14 +137,19 @@ class PositionSyncManager:
             broker_client: AlpacaClient instance
             auto_fix: Whether to automatically fix discrepancies
             dry_run: If True, detect but don't apply fixes
+            circuit_breaker: Optional circuit breaker (uses global broker breaker if None)
         """
         self.db_conn = db_conn
         self.broker_client = broker_client
         self.auto_fix = auto_fix
         self.dry_run = dry_run
+        self.circuit_breaker = circuit_breaker or get_broker_circuit_breaker()
 
     def run_full_sync(self) -> SyncResult:
         """Run a full position synchronization.
+
+        Uses circuit breaker to prevent cascading failures if broker
+        API is experiencing issues.
 
         Returns:
             SyncResult with details of the sync operation
@@ -132,6 +157,19 @@ class PositionSyncManager:
         start_time = datetime.now()
         discrepancies: List[Discrepancy] = []
         errors: List[str] = []
+
+        # Check circuit breaker before starting
+        if self.circuit_breaker.is_open:
+            logger.warning(
+                f"Circuit breaker '{self.circuit_breaker.name}' is open - "
+                "skipping sync"
+            )
+            return SyncResult(
+                success=False,
+                sync_time=start_time,
+                errors=[f"Circuit breaker open: {self.circuit_breaker.name}"],
+                duration_ms=0
+            )
 
         try:
             # Step 1: Fetch positions from both sources
@@ -184,9 +222,38 @@ class PositionSyncManager:
 
             return result
 
+        except CircuitOpenError as e:
+            logger.error(f"Sync blocked by circuit breaker: {e}")
+            errors.append(f"Circuit breaker: {e}")
+            duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+            return SyncResult(
+                success=False,
+                sync_time=start_time,
+                discrepancies_found=len(discrepancies),
+                discrepancies=discrepancies,
+                duration_ms=duration_ms,
+                errors=errors
+            )
+
+        except GapTradingError as e:
+            logger.error(f"Sync failed with categorized error: {e} (category: {e.category.value})")
+            errors.append(f"{e.category.value}: {e}")
+            duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+            return SyncResult(
+                success=False,
+                sync_time=start_time,
+                discrepancies_found=len(discrepancies),
+                discrepancies=discrepancies,
+                duration_ms=duration_ms,
+                errors=errors
+            )
+
         except Exception as e:
-            logger.error(f"Sync failed with error: {e}")
-            errors.append(str(e))
+            wrapped = wrap_exception(e)
+            logger.error(f"Sync failed with error: {wrapped} (category: {wrapped.category.value})")
+            errors.append(f"{wrapped.category.value}: {e}")
 
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
 
@@ -226,27 +293,68 @@ class PositionSyncManager:
 
         return positions
 
-    def _get_broker_positions(self) -> List[Dict[str, Any]]:
-        """Fetch positions from broker (Alpaca).
+    def _get_broker_positions(self, max_retries: int = 3) -> List[Dict[str, Any]]:
+        """Fetch positions from broker (Alpaca) with retry and circuit breaker.
+
+        Args:
+            max_retries: Maximum retry attempts for transient failures
 
         Returns:
             List of position dictionaries
+
+        Raises:
+            CircuitOpenError: If circuit breaker is open
+            GapTradingError: If all retries fail
         """
-        broker_positions = self.broker_client.get_positions()
+        # Check circuit breaker
+        if self.circuit_breaker.is_open:
+            raise CircuitOpenError(
+                f"Circuit breaker '{self.circuit_breaker.name}' is open - "
+                "cannot fetch broker positions"
+            )
 
-        positions = []
-        for p in broker_positions:
-            positions.append({
-                'symbol': p.symbol,
-                'quantity': abs(int(float(p.quantity))),
-                'direction': 'LONG' if p.is_long else 'SHORT',
-                'entry_price': float(p.avg_entry_price),
-                'current_price': float(p.current_price),
-                'market_value': float(p.market_value),
-                'unrealized_pl': float(p.unrealized_pl)
-            })
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                broker_positions = self.broker_client.get_positions()
 
-        return positions
+                # Record success
+                self.circuit_breaker.record_success()
+
+                positions = []
+                for p in broker_positions:
+                    positions.append({
+                        'symbol': p.symbol,
+                        'quantity': abs(int(float(p.quantity))),
+                        'direction': 'LONG' if p.is_long else 'SHORT',
+                        'entry_price': float(p.avg_entry_price),
+                        'current_price': float(p.current_price),
+                        'market_value': float(p.market_value),
+                        'unrealized_pl': float(p.unrealized_pl)
+                    })
+
+                return positions
+
+            except Exception as e:
+                last_error = e
+                wrapped = wrap_exception(e)
+                self.circuit_breaker.record_failure(e)
+
+                # Check if retryable
+                if not wrapped.retryable or attempt >= max_retries:
+                    logger.error(f"Failed to get broker positions: {wrapped}")
+                    raise wrapped
+
+                # Calculate backoff delay
+                delay = min(2 ** attempt, 30)
+                logger.warning(
+                    f"Get positions attempt {attempt}/{max_retries} failed: {e}. "
+                    f"Retrying in {delay}s..."
+                )
+                time.sleep(delay)
+
+        # Should not reach here, but just in case
+        raise wrap_exception(last_error) if last_error else NetworkError("Unknown error fetching positions")
 
     def _compare_positions(
         self,
@@ -343,7 +451,7 @@ class PositionSyncManager:
         broker_symbols = {p['symbol'] for p in broker_positions}
 
         cursor.execute("""
-            SELECT o.id, o.symbol, o.tradier_order_id, p.position_id, p.status as pos_status
+            SELECT o.id, o.symbol, o.broker_order_id, p.position_id, p.status as pos_status
             FROM gap_trading.orders o
             LEFT JOIN gap_trading.positions p ON o.related_position_id = p.position_id
             WHERE o.order_type = 'stop'
