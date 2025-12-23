@@ -231,7 +231,8 @@ class OrderManager:
         self,
         signal: Any,
         position_size: Any,
-        use_oto: bool = False
+        use_oto: bool = False,
+        use_stop_orders: bool = True
     ) -> ExecutionResult:
         """Execute a trade signal with full lifecycle.
 
@@ -239,7 +240,7 @@ class OrderManager:
         1. Check buying power
         2. Place entry order (market)
         3. Wait for fill
-        4. Place stop-loss order separately
+        4. Place stop-loss order separately (if use_stop_orders=True)
         5. Record in database
 
         Flow (OTO mode - use_oto=True):
@@ -248,13 +249,23 @@ class OrderManager:
         3. Wait for entry fill
         4. Record in database
 
-        Note: OTO orders may have limited support, so separate orders
-        is the default mode for compatibility.
+        Flow (Entry-only mode - use_stop_orders=False):
+        1. Check buying power
+        2. Place entry order (market)
+        3. Wait for fill
+        4. Record in database (stop_loss stored but no broker order)
+        5. Software-based stop monitoring handles stop triggers
+
+        Note: use_stop_orders=False is recommended for intraday strategies
+        where all positions close at EOD. This avoids stop orders "holding"
+        shares and blocking EOD close.
 
         Args:
             signal: TradeSignal from signal generator
             position_size: PositionSize from position sizer
             use_oto: Use OTO (One-Triggers-Other) orders (default False)
+            use_stop_orders: Place broker stop orders (default True).
+                            Set to False for software-based stop monitoring.
 
         Returns:
             ExecutionResult with order details
@@ -285,8 +296,11 @@ class OrderManager:
         if use_oto:
             return self._execute_with_oto(signal, signal_type, symbol, shares, stop_price)
 
-        # Legacy: Separate entry and stop orders
-        return self._execute_with_separate_orders(signal, signal_type, symbol, shares, stop_price)
+        # Entry with optional stop order (use_stop_orders=False for software monitoring)
+        return self._execute_with_separate_orders(
+            signal, signal_type, symbol, shares, stop_price,
+            use_stop_orders=use_stop_orders
+        )
 
     def _execute_with_oto(
         self,
@@ -404,9 +418,20 @@ class OrderManager:
         signal_type: str,
         symbol: str,
         shares: int,
-        stop_price: float
+        stop_price: float,
+        use_stop_orders: bool = True
     ) -> ExecutionResult:
-        """Execute signal using separate entry and stop orders (legacy mode)."""
+        """Execute signal with entry order and optional stop order.
+
+        Args:
+            signal: Trade signal
+            signal_type: BUY or SELL_SHORT
+            symbol: Stock ticker
+            shares: Number of shares
+            stop_price: Stop loss price (stored in DB even if no broker order)
+            use_stop_orders: If True, place broker stop order. If False, skip
+                            stop order and rely on software monitoring.
+        """
         # 2. Place entry order
         entry_response = self.place_entry_order(
             symbol=symbol,
@@ -442,25 +467,46 @@ class OrderManager:
         entry_response.fill_quantity = filled_order.filled_quantity
         entry_response.status = 'filled'
 
-        # 4. Place stop-loss order
-        stop_response = self.place_stop_order(
-            symbol=symbol,
-            signal_type=signal_type,
-            shares=filled_order.filled_quantity,
-            stop_price=stop_price
-        )
+        # 4. Place stop-loss order (only if use_stop_orders=True)
+        stop_response = None
+        if use_stop_orders:
+            stop_response = self.place_stop_order(
+                symbol=symbol,
+                signal_type=signal_type,
+                shares=filled_order.filled_quantity,
+                stop_price=stop_price
+            )
+        else:
+            logger.info(
+                f"Skipping broker stop order for {symbol} (software monitoring mode). "
+                f"Stop price ${stop_price:.2f} recorded for monitoring."
+            )
+            # Create a mock response to record the stop price in DB
+            stop_response = OrderResponse(
+                success=True,
+                symbol=symbol,
+                side='sell' if signal_type.upper() in ('BUY', 'LONG') else 'buy_to_cover',
+                quantity=filled_order.filled_quantity,
+                price=stop_price,
+                message="Software monitoring - no broker order"
+            )
+            # Mark it as software-managed (no broker order ID)
+            stop_response.order_id = None
 
         # 5. Record in database - ALWAYS record if entry was filled
         # This is critical because the entry order executed and we need to track the position
+        # Note: stop_price is recorded even if no broker stop order (for software monitoring)
         position_id = None
         if self.db_conn:
             position_id = self._record_orders(
                 signal=signal,
                 entry_order=entry_response,
-                stop_order=stop_response if stop_response.success else None
+                stop_order=stop_response if (stop_response and stop_response.success) else None,
+                stop_price=stop_price  # Always pass stop_price for DB recording
             )
 
-        if not stop_response.success:
+        # If broker stop order was placed but failed
+        if use_stop_orders and stop_response and not stop_response.success:
             logger.error(
                 f"Failed to place stop order for {symbol}: "
                 f"{stop_response.message}"
@@ -475,13 +521,22 @@ class OrderManager:
                 error=stop_response.message
             )
 
+        # Success message varies based on stop order mode
+        if use_stop_orders:
+            msg = (f"Executed {signal_type} {filled_order.filled_quantity} "
+                   f"{symbol} @ ${filled_order.avg_fill_price:.2f} "
+                   f"with stop @ ${stop_price:.2f}")
+        else:
+            msg = (f"Executed {signal_type} {filled_order.filled_quantity} "
+                   f"{symbol} @ ${filled_order.avg_fill_price:.2f} "
+                   f"(software stop @ ${stop_price:.2f})")
+
         return ExecutionResult(
             status=ExecutionStatus.SUCCESS,
             entry_order=entry_response,
-            stop_order=stop_response,
+            stop_order=stop_response if use_stop_orders else None,
             position_id=position_id,
-            message=f"Executed {signal_type} {filled_order.filled_quantity} "
-                    f"{symbol} @ ${filled_order.avg_fill_price:.2f}"
+            message=msg
         )
 
     def place_entry_order(
@@ -1006,14 +1061,16 @@ class OrderManager:
         self,
         signal: Any,
         entry_order: OrderResponse,
-        stop_order: Optional[OrderResponse]
+        stop_order: Optional[OrderResponse],
+        stop_price: Optional[float] = None
     ) -> Optional[int]:
         """Record orders in database.
 
         Args:
             signal: Original trade signal
             entry_order: Entry order response
-            stop_order: Stop order response
+            stop_order: Stop order response (None if software monitoring mode)
+            stop_price: Stop loss price (used when stop_order is None)
 
         Returns:
             Position ID if created, None otherwise
@@ -1037,6 +1094,9 @@ class OrderManager:
                 RETURNING position_id
             """
 
+            # Determine stop loss price: use stop_order.price if available, else use stop_price param
+            effective_stop_price = stop_order.price if stop_order else stop_price
+
             cursor.execute(insert_position_sql, (
                 today,
                 entry_order.symbol,
@@ -1044,7 +1104,7 @@ class OrderManager:
                 entry_order.fill_quantity,
                 entry_order.fill_price,
                 now,
-                stop_order.price if stop_order else None,
+                effective_stop_price,  # Always record stop price for monitoring
                 'OPEN',
                 getattr(signal, 'id', None),
                 'gap_trading'  # Strategy identifier for filtering
