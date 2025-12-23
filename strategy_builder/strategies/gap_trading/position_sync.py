@@ -488,21 +488,72 @@ class PositionSyncManager:
         for d in discrepancies:
             try:
                 if d.type == DiscrepancyType.POSITION_MISSING_BROKER:
-                    # Mark position as closed - it was closed in broker
+                    # Get position details for P&L calculation
                     cursor.execute("""
-                        UPDATE gap_trading.positions
-                        SET status = 'CLOSED',
-                            exit_reason = 'MANUAL',
-                            exit_time = NOW(),
-                            updated_at = NOW(),
-                            last_close_error = 'Closed by sync - not found in broker'
+                        SELECT entry_price, shares, direction
+                        FROM gap_trading.positions
                         WHERE position_id = %s
                     """, (d.position_id,))
+                    row = cursor.fetchone()
+
+                    if row:
+                        entry_price, shares, direction = row
+                        entry_price = float(entry_price) if entry_price else 0
+                        shares = int(shares) if shares else 0
+
+                        # Get exit price (current market price)
+                        exit_price = self._get_exit_price(d.symbol)
+
+                        # Calculate P&L
+                        if exit_price and entry_price and shares:
+                            if direction == 'LONG':
+                                pnl = (exit_price - entry_price) * shares
+                            else:
+                                pnl = (entry_price - exit_price) * shares
+                            pnl_pct = (pnl / (entry_price * shares)) * 100
+                        else:
+                            pnl = None
+                            pnl_pct = None
+                            logger.warning(
+                                f"Could not calculate P&L for {d.symbol}: "
+                                f"exit_price={exit_price}, entry_price={entry_price}, shares={shares}"
+                            )
+
+                        # Mark position as closed with P&L
+                        cursor.execute("""
+                            UPDATE gap_trading.positions
+                            SET status = 'CLOSED',
+                                exit_reason = 'MANUAL',
+                                exit_price = %s,
+                                exit_time = NOW(),
+                                pnl = %s,
+                                pnl_percent = %s,
+                                updated_at = NOW(),
+                                last_close_error = 'Closed by sync - not found in broker'
+                            WHERE position_id = %s
+                        """, (exit_price, pnl, pnl_pct, d.position_id))
+
+                        pnl_str = f"${pnl:+.2f}" if pnl is not None else "N/A"
+                        logger.info(
+                            f"Marked position {d.position_id} ({d.symbol}) as CLOSED, "
+                            f"exit_price=${exit_price:.2f if exit_price else 0}, P&L={pnl_str}"
+                        )
+                    else:
+                        # Fallback: close without P&L if position not found
+                        cursor.execute("""
+                            UPDATE gap_trading.positions
+                            SET status = 'CLOSED',
+                                exit_reason = 'MANUAL',
+                                exit_time = NOW(),
+                                updated_at = NOW(),
+                                last_close_error = 'Closed by sync - not found in broker'
+                            WHERE position_id = %s
+                        """, (d.position_id,))
+                        logger.warning(f"Marked position {d.position_id} ({d.symbol}) as CLOSED (no P&L data)")
 
                     d.action_taken = SyncAction.MARK_CLOSED
                     d.action_success = True
                     fixed_count += 1
-                    logger.info(f"Marked position {d.position_id} ({d.symbol}) as CLOSED")
 
                 elif d.type == DiscrepancyType.QUANTITY_MISMATCH:
                     # Update quantity to match broker
@@ -571,6 +622,50 @@ class PositionSyncManager:
 
         self.db_conn.commit()
         return cancelled
+
+    def _get_exit_price(self, symbol: str) -> Optional[float]:
+        """Get current market price for a symbol.
+
+        Tries multiple sources in order of preference:
+        1. FMP API (if available)
+        2. Yahoo Finance fallback
+
+        Args:
+            symbol: Stock symbol
+
+        Returns:
+            Current price or None if unavailable
+        """
+        # Try FMP first (preferred for accuracy)
+        try:
+            from fmp.quote import get_quote
+            quote_data = get_quote(symbol)
+            if quote_data and len(quote_data) > 0:
+                price = quote_data[0].get('price')
+                if price:
+                    logger.debug(f"Got exit price for {symbol} from FMP: ${price}")
+                    return float(price)
+        except ImportError:
+            logger.debug("FMP package not available, trying yfinance")
+        except Exception as e:
+            logger.warning(f"FMP quote failed for {symbol}: {e}")
+
+        # Fallback to Yahoo Finance
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period='1d')
+            if not hist.empty:
+                price = hist['Close'].iloc[-1]
+                logger.debug(f"Got exit price for {symbol} from Yahoo: ${price}")
+                return float(price)
+        except ImportError:
+            logger.warning("yfinance not available")
+        except Exception as e:
+            logger.warning(f"Yahoo Finance failed for {symbol}: {e}")
+
+        logger.error(f"Could not get exit price for {symbol} from any source")
+        return None
 
     def _log_sync_result(self, result: SyncResult) -> None:
         """Log sync result to database.

@@ -302,6 +302,70 @@ class ReportGenerator:
             'trading_days': len(daily_pnl),
         }
 
+    def regenerate_past_reports(self, days_back: int = 7) -> List[date]:
+        """Regenerate reports for dates that have closed positions but incomplete reports.
+
+        This method finds dates where:
+        - Positions were closed with P&L data
+        - But daily_reports shows 0 trades or mismatched P&L
+
+        Useful for fixing reports after late position closes via sync.
+
+        Args:
+            days_back: Number of days to look back (default 7)
+
+        Returns:
+            List of dates where reports were regenerated
+        """
+        cursor = self.db_conn.cursor()
+
+        # Find dates with closed positions that need report regeneration
+        cursor.execute("""
+            WITH position_stats AS (
+                SELECT
+                    trade_date,
+                    COUNT(*) as closed_count,
+                    COALESCE(SUM(pnl), 0) as total_pnl
+                FROM gap_trading.positions
+                WHERE status = 'CLOSED'
+                  AND strategy = 'gap_trading'
+                  AND trade_date >= CURRENT_DATE - INTERVAL '%s days'
+                GROUP BY trade_date
+            )
+            SELECT ps.trade_date, ps.closed_count, ps.total_pnl,
+                   COALESCE(r.trades_executed, 0) as report_trades,
+                   COALESCE(r.daily_pnl, 0) as report_pnl
+            FROM position_stats ps
+            LEFT JOIN gap_trading.daily_reports r ON ps.trade_date = r.trade_date
+            WHERE ps.closed_count > 0
+              AND (r.trades_executed IS NULL
+                   OR r.trades_executed != ps.closed_count
+                   OR ABS(COALESCE(r.daily_pnl, 0) - ps.total_pnl) > 0.01)
+            ORDER BY ps.trade_date
+        """, (days_back,))
+
+        dates_to_regenerate = []
+        for row in cursor.fetchall():
+            trade_date, closed_count, total_pnl, report_trades, report_pnl = row
+            logger.info(
+                f"Report mismatch for {trade_date}: "
+                f"positions={closed_count} (pnl=${total_pnl:.2f}), "
+                f"report={report_trades} (pnl=${report_pnl:.2f})"
+            )
+            dates_to_regenerate.append(trade_date)
+
+        regenerated = []
+        for report_date in dates_to_regenerate:
+            try:
+                logger.info(f"Regenerating report for {report_date}")
+                self.generate_daily_report(report_date)
+                regenerated.append(report_date)
+            except Exception as e:
+                logger.error(f"Failed to regenerate report for {report_date}: {e}")
+
+        logger.info(f"Regenerated {len(regenerated)}/{len(dates_to_regenerate)} reports")
+        return regenerated
+
     def format_telegram_report(self, report: DailyReport) -> str:
         """Format report for Telegram message.
 
