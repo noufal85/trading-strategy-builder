@@ -65,13 +65,13 @@ class OrderResponse:
         order_id: Broker order ID (if successful)
         symbol: Stock symbol
         side: Order side (buy, sell, etc.)
-        quantity: Number of shares
+        quantity: Number of shares (supports fractional)
         order_type: Order type (market, stop, etc.)
         price: Limit/stop price (if applicable)
         status: Order status
         message: Status message or error description
         fill_price: Actual fill price (if filled)
-        fill_quantity: Number of shares filled
+        fill_quantity: Number of shares filled (supports fractional)
         timestamp: Order timestamp
         tag: Order tag for tracking (format: gaptrading-{type}-{symbol}-{timestamp})
     """
@@ -79,13 +79,13 @@ class OrderResponse:
     order_id: Optional[int] = None
     symbol: str = ''
     side: str = ''
-    quantity: int = 0
+    quantity: float = 0  # Supports fractional shares
     order_type: str = 'market'
     price: Optional[float] = None
     status: str = ''
     message: str = ''
     fill_price: Optional[float] = None
-    fill_quantity: int = 0
+    fill_quantity: float = 0  # Supports fractional shares
     timestamp: datetime = field(default_factory=datetime.now)
     tag: Optional[str] = None
 
@@ -307,7 +307,7 @@ class OrderManager:
         signal: Any,
         signal_type: str,
         symbol: str,
-        shares: int,
+        shares: float,
         stop_price: float
     ) -> ExecutionResult:
         """Execute signal using OTO (One-Triggers-Other) order.
@@ -417,7 +417,7 @@ class OrderManager:
         signal: Any,
         signal_type: str,
         symbol: str,
-        shares: int,
+        shares: float,
         stop_price: float,
         use_stop_orders: bool = True
     ) -> ExecutionResult:
@@ -543,7 +543,7 @@ class OrderManager:
         self,
         symbol: str,
         signal_type: str,
-        shares: int,
+        shares: float,
         max_retries: int = 2
     ) -> OrderResponse:
         """Place entry market order with retry and circuit breaker protection.
@@ -645,7 +645,7 @@ class OrderManager:
         self,
         symbol: str,
         signal_type: str,
-        shares: int,
+        shares: float,
         stop_price: float,
         max_retries: int = 2
     ) -> OrderResponse:
@@ -752,7 +752,7 @@ class OrderManager:
     def close_position(
         self,
         symbol: str,
-        shares: int,
+        shares: float,
         is_long: bool,
         stop_order_id: Optional[int] = None,
         max_retries: int = 3

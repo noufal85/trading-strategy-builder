@@ -37,7 +37,7 @@ class PositionSize:
 
     Attributes:
         symbol: Stock ticker symbol
-        shares: Number of shares to trade
+        shares: Number of shares to trade (supports fractional)
         entry_price: Expected entry price
         position_value: Total position value (shares * price)
         risk_amount: Dollar amount at risk
@@ -49,7 +49,7 @@ class PositionSize:
         adjustments: Dict of adjustments applied
     """
     symbol: str
-    shares: int
+    shares: float  # Supports fractional shares
     entry_price: float
     position_value: float
     risk_amount: float
@@ -88,7 +88,8 @@ class PositionSizer:
     Risk Management:
     - Default risk per trade: 1% of account
     - Maximum single position: 10% of account
-    - Minimum shares: 1
+    - Minimum shares: 0.0001 (fractional)
+    - Supports fractional shares for small accounts
     """
 
     def __init__(
@@ -96,8 +97,8 @@ class PositionSizer:
         account_value: float,
         risk_per_trade_pct: float = 1.0,
         max_position_pct: float = 10.0,
-        min_shares: int = 1,
-        max_shares: Optional[int] = None,
+        min_shares: float = 0.0001,
+        max_shares: Optional[float] = None,
         risk_classifier: Optional[RiskTierClassifier] = None,
         sizing_method: SizingMethod = SizingMethod.ATR_BASED
     ):
@@ -107,7 +108,7 @@ class PositionSizer:
             account_value: Total account value
             risk_per_trade_pct: Risk per trade as % of account (default 1%)
             max_position_pct: Max position as % of account (default 10%)
-            min_shares: Minimum shares per trade (default 1)
+            min_shares: Minimum shares per trade (default 0.0001 for fractional)
             max_shares: Maximum shares per trade (optional)
             risk_classifier: RiskTierClassifier instance
             sizing_method: Position sizing method
@@ -136,7 +137,7 @@ class PositionSizer:
         atr: float,
         stop_multiplier: float = 1.5,
         risk_amount: Optional[float] = None
-    ) -> int:
+    ) -> float:
         """Calculate base shares from ATR.
 
         shares = risk_amount / (ATR * stop_multiplier)
@@ -148,7 +149,7 @@ class PositionSizer:
             risk_amount: Dollar risk (defaults to self.risk_amount)
 
         Returns:
-            Number of shares (at least min_shares)
+            Number of shares (fractional, at least min_shares)
         """
         risk = risk_amount or self.risk_amount
 
@@ -162,51 +163,51 @@ class PositionSizer:
 
         shares = risk / stop_distance
 
-        # Round down to whole shares
-        shares = int(math.floor(shares))
+        # Round to 4 decimal places for fractional shares (Alpaca precision)
+        shares = round(shares, 4)
 
         return max(shares, self.min_shares)
 
     def apply_tier_adjustment(
         self,
-        shares: int,
+        shares: float,
         risk_tier: RiskTier
-    ) -> int:
+    ) -> float:
         """Apply risk tier position multiplier.
 
         Args:
-            shares: Base number of shares
+            shares: Base number of shares (fractional)
             risk_tier: Risk tier for adjustment
 
         Returns:
-            Adjusted number of shares
+            Adjusted number of shares (fractional)
         """
         multiplier = self.risk_classifier.get_position_multiplier(risk_tier)
-        adjusted = int(math.floor(shares * multiplier))
+        adjusted = round(shares * multiplier, 4)
 
         return max(adjusted, self.min_shares)
 
     def check_max_position(
         self,
-        shares: int,
+        shares: float,
         price: float,
         max_position_value: Optional[float] = None
-    ) -> int:
+    ) -> float:
         """Check and limit position to maximum.
 
         Args:
-            shares: Proposed number of shares
+            shares: Proposed number of shares (fractional)
             price: Entry price
             max_position_value: Maximum position value (optional)
 
         Returns:
-            Shares limited to maximum position
+            Shares limited to maximum position (fractional)
         """
         max_value = max_position_value or self.max_position_value
         position_value = shares * price
 
         if position_value > max_value:
-            shares = int(math.floor(max_value / price))
+            shares = round(max_value / price, 4)
 
         # Also apply max_shares limit if set
         if self.max_shares is not None:
@@ -255,7 +256,7 @@ class PositionSizer:
 
         # Step 4: Check buying power if provided
         if buying_power is not None:
-            max_affordable = int(math.floor(buying_power / entry_price))
+            max_affordable = round(buying_power / entry_price, 4)
             if final_shares > max_affordable:
                 final_shares = max(max_affordable, self.min_shares)
                 adjustments['buying_power_limit'] = True
@@ -317,7 +318,7 @@ class PositionSizer:
 
         # Calculate shares
         base_shares = self.calculate_shares(entry_price, atr, stop_mult, risk)
-        tier_adjusted = int(math.floor(base_shares * position_mult))
+        tier_adjusted = round(base_shares * position_mult, 4)
         final_shares = self.check_max_position(tier_adjusted, entry_price)
 
         # Final values
@@ -374,8 +375,8 @@ def calculate_shares_simple(
     atr: float,
     stop_multiplier: float = 1.5,
     position_multiplier: float = 1.0
-) -> int:
-    """Simple function to calculate shares.
+) -> float:
+    """Simple function to calculate shares (supports fractional).
 
     Args:
         risk_amount: Dollar amount to risk
@@ -384,13 +385,13 @@ def calculate_shares_simple(
         position_multiplier: Tier-based position multiplier
 
     Returns:
-        Number of shares
+        Number of shares (fractional)
     """
     if atr <= 0 or stop_multiplier <= 0:
-        return 1
+        return 0.0001
 
     stop_distance = atr * stop_multiplier
     base_shares = risk_amount / stop_distance
     adjusted = base_shares * position_multiplier
 
-    return max(int(math.floor(adjusted)), 1)
+    return max(round(adjusted, 4), 0.0001)
