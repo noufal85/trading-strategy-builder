@@ -261,6 +261,11 @@ class PositionSizer:
                 final_shares = max(max_affordable, self.min_shares)
                 adjustments['buying_power_limit'] = True
 
+        # Step 5: Round up to whole shares for shorts (Alpaca doesn't support fractional shorts)
+        if signal.signal_type == SignalType.SELL_SHORT:
+            final_shares = max(math.ceil(final_shares), 1)
+            adjustments['rounded_for_short'] = True
+
         # Calculate final values
         position_value = final_shares * entry_price
         stop_distance = abs(entry_price - stop_loss)
@@ -320,6 +325,10 @@ class PositionSizer:
         base_shares = self.calculate_shares(entry_price, atr, stop_mult, risk)
         tier_adjusted = round(base_shares * position_mult, 4)
         final_shares = self.check_max_position(tier_adjusted, entry_price)
+
+        # Round up to whole shares for shorts (Alpaca doesn't support fractional shorts)
+        if signal_type == SignalType.SELL_SHORT:
+            final_shares = max(math.ceil(final_shares), 1)
 
         # Final values
         position_value = final_shares * entry_price

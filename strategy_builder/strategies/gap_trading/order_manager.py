@@ -487,7 +487,9 @@ class OrderManager:
                 symbol=symbol,
                 side='sell' if signal_type.upper() in ('BUY', 'LONG') else 'buy_to_cover',
                 quantity=filled_order.filled_quantity,
+                order_type='stop',
                 price=stop_price,
+                status='pending',  # Pending = waiting to be triggered by software monitor
                 message="Software monitoring - no broker order"
             )
             # Mark it as software-managed (no broker order ID)
