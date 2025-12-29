@@ -1040,7 +1040,10 @@ Check broker positions and verify DB state.
         """Get health check data.
 
         Returns:
-            Dict with health information
+            Dict with health information including:
+            - is_healthy: True only when actively monitoring (RUNNING and not stale)
+            - is_operational: True when process is working correctly (STARTING or RUNNING)
+            - reason: Human-readable explanation of current state
         """
         now = datetime.now()
         last_check = self.state.last_check_time
@@ -1052,9 +1055,33 @@ Check broker positions and verify DB state.
             stale_seconds = (now - last_check).total_seconds()
             is_stale = stale_seconds > (self.config.check_interval * 2)
 
+        # Determine status flags
+        status = self.state.status
+        is_healthy = status == MonitorStatus.RUNNING and not is_stale
+        is_operational = status in (MonitorStatus.STARTING, MonitorStatus.RUNNING)
+
+        # Generate human-readable reason
+        if status == MonitorStatus.STARTING:
+            reason = "Waiting for market to open"
+        elif status == MonitorStatus.RUNNING:
+            if is_stale:
+                reason = f"Stale - no check for {stale_seconds:.0f}s"
+            else:
+                reason = "Actively monitoring positions"
+        elif status == MonitorStatus.STOPPED:
+            reason = "Monitor stopped (market closed)"
+        elif status == MonitorStatus.STOPPING:
+            reason = "Shutting down"
+        elif status == MonitorStatus.ERROR:
+            reason = "Error state - check logs"
+        else:
+            reason = f"Unknown state: {status}"
+
         return {
             **self.state.to_dict(),
-            'is_healthy': self.state.status == MonitorStatus.RUNNING and not is_stale,
+            'is_healthy': is_healthy,
+            'is_operational': is_operational,
+            'reason': reason,
             'is_stale': is_stale,
             'stale_seconds': stale_seconds,
             'config': {
