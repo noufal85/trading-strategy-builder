@@ -1,0 +1,399 @@
+"""Technical Indicator Calculations for Gap Trading.
+
+Provides RSI and ADX calculations for signal quality assessment
+and priority ranking.
+
+Created Date: 2026-01-05
+"""
+
+import logging
+from typing import List, Optional, Tuple
+from dataclasses import dataclass
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class IndicatorData:
+    """Container for technical indicator values."""
+    symbol: str
+    rsi_14: Optional[float] = None
+    adx_14: Optional[float] = None
+    plus_di: Optional[float] = None  # +DI component
+    minus_di: Optional[float] = None  # -DI component
+    rsi_signal: str = "neutral"  # bullish, bearish, overbought, oversold
+    adx_signal: str = "moderate"  # strong, moderate, weak
+    error: Optional[str] = None
+
+
+def calculate_rsi(prices: List[float], period: int = 14) -> Optional[float]:
+    """Calculate Relative Strength Index (RSI).
+
+    RSI = 100 - (100 / (1 + RS))
+    where RS = Average Gain / Average Loss over period
+
+    Args:
+        prices: List of closing prices (oldest to newest)
+        period: RSI period (default 14)
+
+    Returns:
+        RSI value (0-100) or None if insufficient data
+    """
+    if len(prices) < period + 1:
+        logger.warning(f"Insufficient data for RSI: need {period + 1} prices, got {len(prices)}")
+        return None
+
+    # Convert to numpy array
+    prices_arr = np.array(prices, dtype=float)
+
+    # Calculate price changes
+    deltas = np.diff(prices_arr)
+
+    # Separate gains and losses
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
+
+    # Use simple moving average for initial calculation
+    # Then use exponential moving average (Wilder's smoothing)
+    if len(gains) < period:
+        return None
+
+    # Initial averages
+    avg_gain = np.mean(gains[:period])
+    avg_loss = np.mean(losses[:period])
+
+    # Apply Wilder's smoothing for remaining periods
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+    # Calculate RS and RSI
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    return round(rsi, 2)
+
+
+def calculate_adx(
+    high: List[float],
+    low: List[float],
+    close: List[float],
+    period: int = 14
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Calculate Average Directional Index (ADX) with +DI and -DI.
+
+    ADX measures trend strength (not direction):
+    - ADX > 25: Strong trend
+    - ADX 20-25: Moderate trend
+    - ADX < 20: Weak/no trend
+
+    Args:
+        high: List of high prices (oldest to newest)
+        low: List of low prices (oldest to newest)
+        close: List of closing prices (oldest to newest)
+        period: ADX period (default 14)
+
+    Returns:
+        Tuple of (ADX, +DI, -DI) or (None, None, None) if insufficient data
+    """
+    min_length = period * 2 + 1  # Need enough data for smoothing
+
+    if len(high) < min_length or len(low) < min_length or len(close) < min_length:
+        logger.warning(f"Insufficient data for ADX: need {min_length} bars, got {len(high)}")
+        return None, None, None
+
+    # Convert to numpy arrays
+    high_arr = np.array(high, dtype=float)
+    low_arr = np.array(low, dtype=float)
+    close_arr = np.array(close, dtype=float)
+
+    # Calculate True Range (TR)
+    tr1 = high_arr[1:] - low_arr[1:]
+    tr2 = np.abs(high_arr[1:] - close_arr[:-1])
+    tr3 = np.abs(low_arr[1:] - close_arr[:-1])
+    true_range = np.maximum(np.maximum(tr1, tr2), tr3)
+
+    # Calculate Directional Movement (+DM and -DM)
+    up_move = high_arr[1:] - high_arr[:-1]
+    down_move = low_arr[:-1] - low_arr[1:]
+
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+
+    # Wilder's smoothing function
+    def wilders_smooth(data: np.ndarray, period: int) -> np.ndarray:
+        """Apply Wilder's exponential smoothing."""
+        smoothed = np.zeros(len(data))
+        smoothed[period - 1] = np.sum(data[:period])
+        for i in range(period, len(data)):
+            smoothed[i] = smoothed[i - 1] - (smoothed[i - 1] / period) + data[i]
+        return smoothed
+
+    # Smooth TR, +DM, -DM
+    atr = wilders_smooth(true_range, period)
+    smooth_plus_dm = wilders_smooth(plus_dm, period)
+    smooth_minus_dm = wilders_smooth(minus_dm, period)
+
+    # Calculate +DI and -DI
+    plus_di = np.zeros(len(atr))
+    minus_di = np.zeros(len(atr))
+
+    # Avoid division by zero
+    valid_atr = atr > 0
+    plus_di[valid_atr] = 100 * smooth_plus_dm[valid_atr] / atr[valid_atr]
+    minus_di[valid_atr] = 100 * smooth_minus_dm[valid_atr] / atr[valid_atr]
+
+    # Calculate DX (Directional Index)
+    di_sum = plus_di + minus_di
+    di_diff = np.abs(plus_di - minus_di)
+
+    dx = np.zeros(len(di_sum))
+    valid_di = di_sum > 0
+    dx[valid_di] = 100 * di_diff[valid_di] / di_sum[valid_di]
+
+    # Calculate ADX (smoothed DX)
+    # Start ADX calculation after we have enough DX values
+    start_idx = period * 2 - 1
+    if start_idx >= len(dx):
+        return None, None, None
+
+    # Initial ADX is simple average of first 'period' DX values
+    adx = np.zeros(len(dx))
+    adx[start_idx] = np.mean(dx[start_idx - period + 1:start_idx + 1])
+
+    # Smooth subsequent ADX values
+    for i in range(start_idx + 1, len(dx)):
+        adx[i] = (adx[i - 1] * (period - 1) + dx[i]) / period
+
+    # Return latest values
+    latest_adx = round(adx[-1], 2) if adx[-1] > 0 else None
+    latest_plus_di = round(plus_di[-1], 2) if plus_di[-1] > 0 else None
+    latest_minus_di = round(minus_di[-1], 2) if minus_di[-1] > 0 else None
+
+    return latest_adx, latest_plus_di, latest_minus_di
+
+
+def get_rsi_signal(rsi: float, gap_direction: str) -> str:
+    """Classify RSI condition based on value and gap direction.
+
+    Args:
+        rsi: RSI value (0-100)
+        gap_direction: 'UP' or 'DOWN'
+
+    Returns:
+        Signal classification: bullish, bearish, overbought, oversold, neutral
+    """
+    if rsi is None:
+        return "neutral"
+
+    if gap_direction == "UP":
+        # For gap up (buying), we prefer RSI not overbought
+        if rsi >= 70:
+            return "overbought"  # Warning - may be extended
+        elif rsi < 30:
+            return "oversold"  # Could be strong bounce
+        elif rsi < 50:
+            return "bullish"  # Room to run
+        else:
+            return "neutral"
+    else:
+        # For gap down (shorting), we prefer RSI not oversold
+        if rsi <= 30:
+            return "oversold"  # Warning - may bounce
+        elif rsi > 70:
+            return "overbought"  # Could be strong reversal
+        elif rsi > 50:
+            return "bearish"  # Room to fall
+        else:
+            return "neutral"
+
+
+def get_adx_signal(adx: float) -> str:
+    """Classify ADX trend strength.
+
+    Args:
+        adx: ADX value (0-100)
+
+    Returns:
+        Signal classification: strong, moderate, weak
+    """
+    if adx is None:
+        return "moderate"
+
+    if adx > 25:
+        return "strong"
+    elif adx >= 20:
+        return "moderate"
+    else:
+        return "weak"
+
+
+def calculate_rsi_score(rsi: float, gap_direction: str) -> float:
+    """Calculate RSI score (0-100) based on alignment with gap direction.
+
+    For GAP UP (BUY):
+        RSI 30-50: 100 (ideal - room to run)
+        RSI 50-60: 80
+        RSI 60-70: 50
+        RSI > 70: 20 (overbought)
+        RSI < 30: 60 (oversold bounce)
+
+    For GAP DOWN (SHORT):
+        RSI 50-70: 100 (ideal - room to fall)
+        RSI 40-50: 80
+        RSI 30-40: 50
+        RSI < 30: 20 (oversold)
+        RSI > 70: 60 (overbought reversal)
+    """
+    if rsi is None:
+        return 50.0  # Neutral score for missing data
+
+    if gap_direction == "UP":
+        if 30 <= rsi <= 50:
+            return 100.0
+        elif 50 < rsi <= 60:
+            return 80.0
+        elif 60 < rsi <= 70:
+            return 50.0
+        elif rsi > 70:
+            return 20.0
+        else:  # rsi < 30
+            return 60.0
+    else:  # DOWN
+        if 50 <= rsi <= 70:
+            return 100.0
+        elif 40 <= rsi < 50:
+            return 80.0
+        elif 30 <= rsi < 40:
+            return 50.0
+        elif rsi < 30:
+            return 20.0
+        else:  # rsi > 70
+            return 60.0
+
+
+def calculate_adx_score(adx: float) -> float:
+    """Calculate ADX score (0-100) based on trend strength.
+
+    ADX 50+: 100 (very strong trend)
+    ADX 25-50: 50-100 (linear scale)
+    ADX 20-25: 40-50 (moderate)
+    ADX < 20: 0-40 (weak)
+    """
+    if adx is None:
+        return 50.0  # Neutral score for missing data
+
+    # Normalize to 0-100 scale
+    # ADX 50 = 100 score
+    score = min(adx / 50 * 100, 100)
+    return round(score, 2)
+
+
+def calculate_priority_score(
+    gap_pct: float,
+    volume_ratio: float,
+    adx: Optional[float],
+    rsi: Optional[float],
+    gap_direction: str,
+    weights: Optional[dict] = None
+) -> float:
+    """Calculate composite priority score for signal ranking.
+
+    Formula:
+    priority_score = (
+        gap_score * 0.30 +
+        volume_score * 0.20 +
+        adx_score * 0.25 +
+        rsi_score * 0.25
+    )
+
+    Args:
+        gap_pct: Gap percentage (absolute value used)
+        volume_ratio: Volume relative to average (1.0 = average)
+        adx: ADX value (0-100)
+        rsi: RSI value (0-100)
+        gap_direction: 'UP' or 'DOWN'
+        weights: Optional custom weights dict
+
+    Returns:
+        Priority score (0-100)
+    """
+    # Default weights
+    if weights is None:
+        weights = {
+            'gap': 0.30,
+            'volume': 0.20,
+            'adx': 0.25,
+            'rsi': 0.25
+        }
+
+    # Calculate component scores
+    # Gap score: 5% gap = 100 score (capped at 100)
+    gap_score = min(abs(gap_pct) / 5.0 * 100, 100)
+
+    # Volume score: 2x volume = 100 score (capped at 100)
+    volume_score = min(volume_ratio * 50, 100) if volume_ratio else 50.0
+
+    # ADX score
+    adx_score = calculate_adx_score(adx) if adx is not None else 50.0
+
+    # RSI score
+    rsi_score = calculate_rsi_score(rsi, gap_direction) if rsi is not None else 50.0
+
+    # Weighted composite
+    priority = (
+        gap_score * weights['gap'] +
+        volume_score * weights['volume'] +
+        adx_score * weights['adx'] +
+        rsi_score * weights['rsi']
+    )
+
+    return round(priority, 2)
+
+
+def get_position_tier(rank: int, total_signals: int, max_trades: int = 6) -> str:
+    """Determine position size tier based on priority rank.
+
+    Top 2: top_tier (120% of base)
+    Mid 2: mid_tier (100% of base)
+    Bottom 2: bottom_tier (80% of base)
+
+    Args:
+        rank: Signal rank (1 = highest priority)
+        total_signals: Total signals being considered
+        max_trades: Maximum trades per day
+
+    Returns:
+        Position tier: top_tier, mid_tier, bottom_tier, or excluded
+    """
+    if rank > max_trades:
+        return "excluded"
+
+    if rank <= 2:
+        return "top_tier"
+    elif rank <= 4:
+        return "mid_tier"
+    else:
+        return "bottom_tier"
+
+
+def get_tier_multiplier(tier: str) -> float:
+    """Get position size multiplier for tier.
+
+    Args:
+        tier: Position tier
+
+    Returns:
+        Size multiplier
+    """
+    multipliers = {
+        'top_tier': 1.20,
+        'mid_tier': 1.00,
+        'bottom_tier': 0.80,
+        'excluded': 0.0
+    }
+    return multipliers.get(tier, 1.0)
