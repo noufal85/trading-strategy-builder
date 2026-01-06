@@ -11,7 +11,7 @@ shares = risk_amount / (ATR * stop_multiplier)
 shares = shares * tier_position_multiplier
 """
 
-from typing import Dict, Optional, NamedTuple
+from typing import Dict, List, Optional, NamedTuple
 from dataclasses import dataclass
 from enum import Enum
 import logging
@@ -404,3 +404,182 @@ def calculate_shares_simple(
     adjusted = base_shares * position_multiplier
 
     return max(round(adjusted, 4), 0.0001)
+
+
+# Priority tier multipliers for capital deployment
+PRIORITY_TIER_MULTIPLIERS = {
+    'top_tier': 1.20,      # Top 2 signals: 120% of base
+    'mid_tier': 1.00,      # Mid 2 signals: 100% of base
+    'bottom_tier': 0.80,   # Bottom 2 signals: 80% of base
+    'excluded': 0.00       # Excluded: no position
+}
+
+
+class TieredPositionSizer:
+    """Position sizer with priority tier-based capital deployment.
+
+    Divides capital across max_trades positions with tier multipliers:
+    - top_tier (rank 1-2): 120% of base position
+    - mid_tier (rank 3-4): 100% of base position
+    - bottom_tier (rank 5-6): 80% of base position
+
+    This ensures higher-conviction trades get more capital while
+    maintaining approximately full capital deployment.
+    """
+
+    def __init__(
+        self,
+        total_capital: float,
+        max_trades: int = 6,
+        tier_multipliers: Optional[Dict[str, float]] = None,
+        min_shares: float = 0.0001,
+    ):
+        """Initialize TieredPositionSizer.
+
+        Args:
+            total_capital: Total capital to deploy
+            max_trades: Maximum trades per day (default 6)
+            tier_multipliers: Custom tier multipliers (optional)
+            min_shares: Minimum shares per trade
+        """
+        self.total_capital = total_capital
+        self.max_trades = max_trades
+        self.tier_multipliers = tier_multipliers or PRIORITY_TIER_MULTIPLIERS
+        self.min_shares = min_shares
+
+    @property
+    def base_position_value(self) -> float:
+        """Base position value = total capital / max trades."""
+        return self.total_capital / self.max_trades
+
+    def get_tier_multiplier(self, tier: str) -> float:
+        """Get multiplier for a position tier.
+
+        Args:
+            tier: Position tier (top_tier, mid_tier, bottom_tier, excluded)
+
+        Returns:
+            Position size multiplier
+        """
+        return self.tier_multipliers.get(tier, 1.0)
+
+    def calculate_position_value(self, tier: str) -> float:
+        """Calculate position value for a tier.
+
+        Args:
+            tier: Position tier
+
+        Returns:
+            Dollar value for position
+        """
+        multiplier = self.get_tier_multiplier(tier)
+        return round(self.base_position_value * multiplier, 2)
+
+    def calculate_shares(
+        self,
+        entry_price: float,
+        tier: str,
+        is_short: bool = False
+    ) -> float:
+        """Calculate shares for a position.
+
+        Args:
+            entry_price: Entry price
+            tier: Position tier
+            is_short: Whether this is a short position
+
+        Returns:
+            Number of shares (rounded appropriately)
+        """
+        position_value = self.calculate_position_value(tier)
+
+        if entry_price <= 0:
+            return self.min_shares
+
+        shares = position_value / entry_price
+
+        # Round up for shorts (Alpaca doesn't support fractional shorts)
+        if is_short:
+            shares = max(math.ceil(shares), 1)
+        else:
+            shares = round(shares, 4)
+
+        return max(shares, self.min_shares)
+
+    def calculate_tiered_positions(
+        self,
+        signals: List[Dict],
+        entry_price_key: str = 'entry_price',
+        tier_key: str = 'position_tier',
+        signal_type_key: str = 'signal_type'
+    ) -> List[Dict]:
+        """Calculate position sizes for all signals based on their tiers.
+
+        Args:
+            signals: List of signal dicts with entry_price and position_tier
+            entry_price_key: Key for entry price in signal dict
+            tier_key: Key for position tier in signal dict
+            signal_type_key: Key for signal type in signal dict
+
+        Returns:
+            List of signals with updated shares and position_value
+        """
+        updated_signals = []
+
+        for sig in signals:
+            tier = sig.get(tier_key, 'mid_tier')
+            entry_price = sig.get(entry_price_key, 0)
+            signal_type = sig.get(signal_type_key, 'BUY')
+            is_short = signal_type in ('SELL_SHORT', 'SHORT', 'SELL')
+
+            if tier == 'excluded' or entry_price <= 0:
+                # Keep original values for excluded signals
+                updated_signals.append(sig)
+                continue
+
+            # Calculate new position values
+            new_position_value = self.calculate_position_value(tier)
+            new_shares = self.calculate_shares(entry_price, tier, is_short)
+
+            # Update signal with new position sizing
+            updated_sig = sig.copy()
+            updated_sig['shares'] = new_shares
+            updated_sig['position_value'] = new_position_value
+            updated_sig['tier_multiplier'] = self.get_tier_multiplier(tier)
+            updated_sig['sizing_method'] = 'tiered_capital_deployment'
+
+            updated_signals.append(updated_sig)
+
+        return updated_signals
+
+    def get_deployment_summary(self, signals: List[Dict]) -> Dict:
+        """Get summary of capital deployment across tiers.
+
+        Args:
+            signals: List of signals with position_tier
+
+        Returns:
+            Dict with deployment statistics
+        """
+        tier_counts = {'top_tier': 0, 'mid_tier': 0, 'bottom_tier': 0, 'excluded': 0}
+        tier_values = {'top_tier': 0.0, 'mid_tier': 0.0, 'bottom_tier': 0.0}
+
+        for sig in signals:
+            tier = sig.get('position_tier', 'excluded')
+            if tier in tier_counts:
+                tier_counts[tier] += 1
+            if tier in tier_values:
+                tier_values[tier] += sig.get('position_value', 0)
+
+        total_deployed = sum(tier_values.values())
+        deployment_pct = (total_deployed / self.total_capital * 100) if self.total_capital > 0 else 0
+
+        return {
+            'total_capital': self.total_capital,
+            'base_position_value': self.base_position_value,
+            'tier_counts': tier_counts,
+            'tier_values': tier_values,
+            'total_deployed': total_deployed,
+            'deployment_pct': round(deployment_pct, 2),
+            'max_trades': self.max_trades
+        }
