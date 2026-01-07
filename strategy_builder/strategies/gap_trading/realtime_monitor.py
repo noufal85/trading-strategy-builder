@@ -81,6 +81,12 @@ class MonitorConfig:
         market_close_time: Market close time (HH:MM ET)
         max_consecutive_errors: Errors before alerting
         health_check_port: Port for health endpoint (0 = disabled)
+        trailing_enabled: Enable trailing stop-loss
+        trailing_atr_multiplier: ATR multiplier for trail distance
+        trailing_activation_pct: Min profit % before trailing activates
+        breakeven_enabled: Enable break-even stop
+        breakeven_threshold_pct: Profit % to trigger break-even
+        breakeven_buffer_pct: Small buffer above entry (avoid whipsaw)
     """
     check_interval: int = 60
     eod_close_time: str = '15:55'  # 3:55 PM ET
@@ -88,6 +94,14 @@ class MonitorConfig:
     market_close_time: str = '16:00'
     max_consecutive_errors: int = 5
     health_check_port: int = 8080
+    # Trailing stop configuration
+    trailing_enabled: bool = True
+    trailing_atr_multiplier: float = 1.0
+    trailing_activation_pct: float = 0.5  # Min profit % to start trailing
+    # Break-even stop configuration
+    breakeven_enabled: bool = True
+    breakeven_threshold_pct: float = 1.0  # Profit % to trigger break-even
+    breakeven_buffer_pct: float = 0.1  # Buffer above entry to cover commissions
 
     @property
     def eod_close_datetime(self) -> datetime:
@@ -307,8 +321,46 @@ class RealtimeStopLossMonitor:
                 logger.warning(f"No stop price for {symbol}")
                 continue
 
-            # Check if stop hit
             is_long = position.get('side') == 'LONG'
+            position_id = position.get('id')
+
+            # 1. Check break-even activation (one-time, highest priority)
+            breakeven_stop = self._check_breakeven(position, current_price)
+            if breakeven_stop:
+                logger.info(
+                    f"BREAK-EVEN activated for {symbol}: "
+                    f"stop {stop_price:.2f} → {breakeven_stop:.2f} "
+                    f"(price={current_price:.2f})"
+                )
+                self._update_position_stop(
+                    position_id=position_id,
+                    new_stop_price=breakeven_stop,
+                    is_breakeven=True,
+                    is_long=is_long
+                )
+                stop_price = breakeven_stop  # Use new stop for subsequent checks
+                position['stop_price'] = breakeven_stop
+                position['breakeven_active'] = True
+
+            # 2. Check trailing stop update (continuous)
+            trail_result = self._update_trailing_stop(position, current_price)
+            if trail_result:
+                new_stop, new_watermark = trail_result
+                logger.info(
+                    f"TRAILING STOP updated for {symbol}: "
+                    f"stop {stop_price:.2f} → {new_stop:.2f} "
+                    f"(watermark={new_watermark:.2f})"
+                )
+                self._update_position_stop(
+                    position_id=position_id,
+                    new_stop_price=new_stop,
+                    watermark=new_watermark,
+                    is_breakeven=False,
+                    is_long=is_long
+                )
+                stop_price = new_stop  # Use new stop for stop hit check
+
+            # 3. Check if stop hit
             is_stop_hit = self._is_stop_hit(current_price, stop_price, is_long)
 
             # Record price check
@@ -317,7 +369,7 @@ class RealtimeStopLossMonitor:
                 current_price=current_price,
                 stop_price=stop_price,
                 is_stop_hit=is_stop_hit,
-                position_id=position.get('id')
+                position_id=position_id
             )
 
             self.state.checks_count += 1
@@ -347,6 +399,177 @@ class RealtimeStopLossMonitor:
         else:
             return current_price >= stop_price
 
+    def _check_breakeven(self, position: Dict[str, Any], current_price: float) -> Optional[float]:
+        """Check if break-even stop should be activated.
+
+        Once position reaches profit threshold, move stop to entry price
+        to eliminate loss risk.
+
+        Args:
+            position: Position dict with entry_price, stop_price, side, breakeven_active
+            current_price: Current market price
+
+        Returns:
+            New stop price if break-even should activate, None otherwise
+        """
+        if not self.config.breakeven_enabled:
+            return None
+
+        # Skip if already at break-even
+        if position.get('breakeven_active'):
+            return None
+
+        entry_price = float(position['entry_price'])
+        threshold = self.config.breakeven_threshold_pct / 100
+        buffer = self.config.breakeven_buffer_pct / 100
+        is_long = position['side'] == 'LONG'
+
+        if is_long:
+            # Check if profit threshold reached
+            profit_pct = (current_price - entry_price) / entry_price
+            if profit_pct >= threshold:
+                # Set stop slightly above entry to cover commissions
+                return entry_price * (1 + buffer)
+        else:  # SHORT
+            # For shorts, profit when price drops
+            profit_pct = (entry_price - current_price) / entry_price
+            if profit_pct >= threshold:
+                # Set stop slightly below entry
+                return entry_price * (1 - buffer)
+
+        return None
+
+    def _update_trailing_stop(self, position: Dict[str, Any], current_price: float) -> Optional[tuple]:
+        """Update stop price based on trailing logic.
+
+        Move stop-loss upward (for longs) as price increases,
+        locking in profits while allowing the trade to run.
+
+        Args:
+            position: Position dict with entry_price, stop_price, side, atr_value, etc.
+            current_price: Current market price
+
+        Returns:
+            Tuple of (new_stop_price, new_watermark) if trailing should update, None otherwise
+        """
+        if not self.config.trailing_enabled:
+            return None
+
+        atr = position.get('atr_value')
+        if not atr:
+            logger.debug(f"No ATR value for {position['symbol']}, skipping trailing stop")
+            return None
+
+        atr = float(atr)
+        trail_distance = atr * self.config.trailing_atr_multiplier
+        entry_price = float(position['entry_price'])
+        current_stop = float(position['stop_price'])
+        is_long = position['side'] == 'LONG'
+
+        # Check if minimum profit threshold reached before trailing
+        activation_threshold = self.config.trailing_activation_pct / 100
+        if is_long:
+            profit_pct = (current_price - entry_price) / entry_price
+        else:
+            profit_pct = (entry_price - current_price) / entry_price
+
+        if profit_pct < activation_threshold:
+            return None  # Not enough profit to start trailing
+
+        if is_long:
+            # Update high water mark
+            high_water = position.get('high_water_mark')
+            if high_water:
+                high_water = float(high_water)
+            new_high = max(high_water or entry_price, current_price)
+
+            # Calculate potential new stop
+            potential_stop = new_high - trail_distance
+
+            # Only trail up, never down
+            if potential_stop > current_stop:
+                return (potential_stop, new_high)
+
+        else:  # SHORT
+            # Update low water mark
+            low_water = position.get('low_water_mark')
+            if low_water:
+                low_water = float(low_water)
+            new_low = min(low_water or entry_price, current_price)
+
+            # Calculate potential new stop
+            potential_stop = new_low + trail_distance
+
+            # Only trail down, never up
+            if potential_stop < current_stop:
+                return (potential_stop, new_low)
+
+        return None
+
+    def _update_position_stop(
+        self,
+        position_id: int,
+        new_stop_price: float,
+        watermark: Optional[float] = None,
+        is_breakeven: bool = False,
+        is_long: bool = True
+    ):
+        """Update stop price and watermarks in database.
+
+        Args:
+            position_id: Position ID
+            new_stop_price: New stop-loss price
+            watermark: New high/low water mark (for trailing)
+            is_breakeven: Whether this is a break-even activation
+            is_long: True if long position (determines which watermark to update)
+        """
+        if not self.db_conn:
+            return
+
+        try:
+            cursor = self.db_conn.cursor()
+
+            if is_breakeven:
+                cursor.execute("""
+                    UPDATE gap_trading.positions SET
+                        stop_loss = %s,
+                        breakeven_active = TRUE,
+                        breakeven_triggered_at = %s
+                    WHERE position_id = %s
+                """, (new_stop_price, datetime.now(), position_id))
+            elif watermark is not None:
+                # Trailing stop update
+                if is_long:
+                    cursor.execute("""
+                        UPDATE gap_trading.positions SET
+                            stop_loss = %s,
+                            high_water_mark = %s,
+                            trailing_stop_active = TRUE
+                        WHERE position_id = %s
+                    """, (new_stop_price, watermark, position_id))
+                else:
+                    cursor.execute("""
+                        UPDATE gap_trading.positions SET
+                            stop_loss = %s,
+                            low_water_mark = %s,
+                            trailing_stop_active = TRUE
+                        WHERE position_id = %s
+                    """, (new_stop_price, watermark, position_id))
+            else:
+                # Simple stop update
+                cursor.execute("""
+                    UPDATE gap_trading.positions SET
+                        stop_loss = %s
+                    WHERE position_id = %s
+                """, (new_stop_price, position_id))
+
+            self.db_conn.commit()
+
+        except Exception as e:
+            logger.error(f"Failed to update position stop: {e}")
+            if self.db_conn:
+                self.db_conn.rollback()
+
     def _get_open_positions(self) -> List[Dict[str, Any]]:
         """Get all open gap trading positions from database.
 
@@ -360,7 +583,8 @@ class RealtimeStopLossMonitor:
             cursor = self.db_conn.cursor()
             cursor.execute("""
                 SELECT position_id, symbol, direction, shares, entry_price, stop_loss,
-                       stop_order_id, strategy
+                       stop_order_id, strategy, atr_at_entry, high_water_mark,
+                       low_water_mark, breakeven_active, original_stop_price
                 FROM gap_trading.positions
                 WHERE status = 'OPEN'
                   AND trade_date = CURRENT_DATE
@@ -368,7 +592,9 @@ class RealtimeStopLossMonitor:
             """)
 
             columns = ['id', 'symbol', 'side', 'quantity', 'entry_price',
-                       'stop_price', 'stop_order_id', 'strategy']
+                       'stop_price', 'stop_order_id', 'strategy', 'atr_value',
+                       'high_water_mark', 'low_water_mark', 'breakeven_active',
+                       'original_stop_price']
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
         except Exception as e:
