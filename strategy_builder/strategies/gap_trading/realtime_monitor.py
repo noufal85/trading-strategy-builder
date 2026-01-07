@@ -24,6 +24,14 @@ try:
 except ImportError:
     from backports.zoneinfo import ZoneInfo
 
+try:
+    import holidays
+    NYSE_HOLIDAYS = holidays.NYSE()
+except ImportError:
+    NYSE_HOLIDAYS = None
+    logger = logging.getLogger(__name__)
+    logger.warning("holidays library not installed, holiday detection disabled")
+
 logger = logging.getLogger(__name__)
 
 # Eastern timezone for market hours
@@ -34,6 +42,7 @@ class MonitorStatus(str, Enum):
     """Monitor process status."""
     STARTING = 'starting'
     RUNNING = 'running'
+    SLEEPING = 'sleeping'  # Off-market hours, waiting for next open
     PAUSED = 'paused'
     STOPPING = 'stopping'
     STOPPED = 'stopped'
@@ -137,6 +146,7 @@ class MonitorState:
         stops_triggered: Number of stops triggered today
         errors_count: Consecutive error count
         positions_monitored: Current position count
+        next_market_open: Next market open time (when sleeping)
     """
     status: MonitorStatus = MonitorStatus.STOPPED
     start_time: Optional[datetime] = None
@@ -145,6 +155,7 @@ class MonitorState:
     stops_triggered: int = 0
     errors_count: int = 0
     positions_monitored: int = 0
+    next_market_open: Optional[datetime] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for health check."""
@@ -156,6 +167,7 @@ class MonitorState:
             'stops_triggered': self.stops_triggered,
             'errors_count': self.errors_count,
             'positions_monitored': self.positions_monitored,
+            'next_market_open': self.next_market_open.isoformat() if self.next_market_open else None,
             'uptime_seconds': (datetime.now() - self.start_time).total_seconds() if self.start_time else 0
         }
 
@@ -219,28 +231,54 @@ class RealtimeStopLossMonitor:
         self.stop()
 
     def start(self):
-        """Start the monitoring loop."""
-        logger.info("Starting RealtimeStopLossMonitor...")
+        """Start the monitoring loop (runs 24/7).
+
+        The monitor runs continuously:
+        - During market hours: checks positions every 60 seconds
+        - After market close: sleeps until next market open
+        - Only exits on SIGTERM, SIGINT, or fatal error
+        """
+        logger.info("Starting RealtimeStopLossMonitor (24/7 mode)...")
 
         self._running = True
         self.state.status = MonitorStatus.STARTING
         self.state.start_time = datetime.now()
         self.state.errors_count = 0
+        self._eod_close_done_today = False
 
-        # Wait for market to be open
-        self._wait_for_market_open()
+        logger.info("Monitor will run continuously until stopped")
 
-        self.state.status = MonitorStatus.RUNNING
-        logger.info("Monitor is now running")
-
-        # Main monitoring loop
+        # Main 24/7 loop
         while self._running:
             try:
-                self._run_check_cycle()
-                self.state.errors_count = 0  # Reset on success
+                now = datetime.now(ET)
+
+                if self._is_before_market_open(now):
+                    # Before market open - sleep until open
+                    self._wait_for_market_open()
+                elif self._is_market_hours(now):
+                    # Market is open - run check cycle
+                    if self.state.status != MonitorStatus.RUNNING:
+                        self.state.status = MonitorStatus.RUNNING
+                        self._eod_close_done_today = False  # Reset for new day
+                        logger.info("Monitor is now running (market open)")
+
+                    self._run_check_cycle()
+                    self.state.errors_count = 0  # Reset on success
+
+                    if self._running:
+                        time.sleep(self.config.check_interval)
+                else:
+                    # After market close - run EOD close then sleep
+                    if not self._eod_close_done_today:
+                        self._execute_eod_close_sequence()
+                        self._eod_close_done_today = True
+
+                    self._wait_for_next_trading_day()
+
             except Exception as e:
                 self.state.errors_count += 1
-                logger.error(f"Error in check cycle: {e}")
+                logger.error(f"Error in main loop: {e}", exc_info=True)
 
                 if self.state.errors_count >= self.config.max_consecutive_errors:
                     logger.critical(
@@ -249,9 +287,8 @@ class RealtimeStopLossMonitor:
                     )
                     self._send_error_alert(str(e))
 
-            # Sleep until next check
-            if self._running:
-                time.sleep(self.config.check_interval)
+                # Brief pause before retry
+                time.sleep(60)
 
         self.state.status = MonitorStatus.STOPPED
         logger.info("Monitor stopped")
@@ -262,35 +299,142 @@ class RealtimeStopLossMonitor:
         self.state.status = MonitorStatus.STOPPING
         self._running = False
 
-    def _wait_for_market_open(self):
-        """Wait until market opens."""
-        now = datetime.now(ET)
+    def _is_before_market_open(self, now: datetime) -> bool:
+        """Check if current time is before market open today."""
         market_open = self.config.market_open_datetime
+        return now < market_open
 
-        if now < market_open:
-            wait_seconds = (market_open - now).total_seconds()
-            logger.info(f"Waiting {wait_seconds:.0f}s for market open at {market_open}")
+    def _is_market_hours(self, now: datetime) -> bool:
+        """Check if current time is during market hours."""
+        market_open = self.config.market_open_datetime
+        market_close = self.config.market_close_datetime
+        return market_open <= now < market_close
 
-            # Wait in chunks to allow shutdown
-            while wait_seconds > 0 and self._running:
-                sleep_time = min(60, wait_seconds)
-                time.sleep(sleep_time)
-                wait_seconds -= sleep_time
+    def _is_trading_day(self, check_date: date) -> bool:
+        """Check if a date is a trading day (not weekend or holiday)."""
+        # Check weekend
+        if check_date.weekday() >= 5:
+            return False
 
-    def _run_check_cycle(self):
-        """Run one price check cycle."""
+        # Check NYSE holidays
+        if NYSE_HOLIDAYS and check_date in NYSE_HOLIDAYS:
+            return False
+
+        return True
+
+    def _get_next_market_open(self) -> datetime:
+        """Calculate next market open time, accounting for weekends and holidays.
+
+        Returns:
+            datetime: Next market open time in ET timezone
+        """
         now = datetime.now(ET)
+        market_open_time = datetime.strptime(
+            self.config.market_open_time, '%H:%M'
+        ).time()
 
-        # Check if past EOD close time
-        if now >= self.config.eod_close_datetime:
-            logger.info("EOD close time reached, initiating EOD close sequence")
-            self._execute_eod_close_sequence()
+        # Start checking from today or tomorrow
+        check_date = now.date()
+        if now.time() >= datetime.strptime(self.config.market_close_time, '%H:%M').time():
+            # After market close, start from tomorrow
+            check_date += timedelta(days=1)
+
+        # Find next trading day (max 10 days ahead to avoid infinite loop)
+        for _ in range(10):
+            if self._is_trading_day(check_date):
+                break
+            check_date += timedelta(days=1)
+
+        # Combine date with market open time
+        next_open = datetime.combine(check_date, market_open_time)
+        return next_open.replace(tzinfo=ET)
+
+    def _wait_for_market_open(self):
+        """Wait until market opens with hourly heartbeat logs."""
+        next_open = self._get_next_market_open()
+        self.state.next_market_open = next_open
+        self.state.status = MonitorStatus.SLEEPING
+
+        now = datetime.now(ET)
+        wait_seconds = (next_open - now).total_seconds()
+
+        if wait_seconds <= 0:
             return
 
-        # Check if market is closed
-        if now >= self.config.market_close_datetime:
-            logger.info("Market closed, stopping monitor")
-            self._running = False
+        logger.info(
+            f"Waiting for market open at {next_open.strftime('%Y-%m-%d %H:%M %Z')} "
+            f"({wait_seconds/3600:.1f} hours)"
+        )
+
+        # Sleep with hourly heartbeat, wake 5 min early
+        self._sleep_with_heartbeat(wait_seconds, wake_early_minutes=5)
+
+        self.state.next_market_open = None
+        logger.info("Market open approaching, resuming active monitoring")
+
+    def _wait_for_next_trading_day(self):
+        """Sleep until next trading day after EOD close."""
+        next_open = self._get_next_market_open()
+        self.state.next_market_open = next_open
+        self.state.status = MonitorStatus.SLEEPING
+
+        now = datetime.now(ET)
+        wait_seconds = (next_open - now).total_seconds()
+
+        if wait_seconds <= 0:
+            return
+
+        logger.info(
+            f"EOD complete. Next market open: {next_open.strftime('%Y-%m-%d %H:%M %Z')} "
+            f"({wait_seconds/3600:.1f} hours)"
+        )
+        logger.info("Entering sleep mode...")
+
+        # Sleep with hourly heartbeat, wake 5 min early
+        self._sleep_with_heartbeat(wait_seconds, wake_early_minutes=5)
+
+        self.state.next_market_open = None
+        logger.info("Waking up - market open approaching")
+
+    def _sleep_with_heartbeat(self, total_seconds: float, wake_early_minutes: int = 5):
+        """Sleep with periodic heartbeat logs.
+
+        Args:
+            total_seconds: Total seconds to sleep
+            wake_early_minutes: Minutes before target to wake up
+        """
+        HEARTBEAT_INTERVAL = 3600  # Log every hour
+
+        # Subtract early wake time
+        sleep_until = total_seconds - (wake_early_minutes * 60)
+        if sleep_until <= 0:
+            return
+
+        elapsed = 0
+
+        while elapsed < sleep_until and self._running:
+            remaining = sleep_until - elapsed
+            sleep_chunk = min(HEARTBEAT_INTERVAL, remaining)
+
+            time.sleep(sleep_chunk)
+            elapsed += sleep_chunk
+
+            if elapsed < sleep_until and self._running:
+                hours_remaining = (sleep_until - elapsed) / 3600
+                logger.info(
+                    f"[Heartbeat] Sleeping. Time until market: {hours_remaining:.1f} hours"
+                )
+
+    def _run_check_cycle(self):
+        """Run one price check cycle.
+
+        Note: EOD close and market hours checks are handled by the main loop.
+        This method only handles position monitoring during market hours.
+        """
+        now = datetime.now(ET)
+
+        # Skip if past EOD close time (main loop handles this)
+        if now >= self.config.eod_close_datetime:
             return
 
         # Get open positions
@@ -816,8 +960,7 @@ class RealtimeStopLossMonitor:
         logger.info("EOD CLOSE SEQUENCE FINISHED")
         logger.info("=" * 50)
 
-        # Now stop the monitor
-        self._running = False
+        # Note: Don't stop monitor - main loop handles sleep until next market open
 
     def _close_all_positions(self, reason: CloseReason):
         """Close all open positions (EOD or manual).
@@ -1267,14 +1410,14 @@ Check broker positions and verify DB state.
 
         Returns:
             Dict with health information including:
-            - is_healthy: True only when actively monitoring (RUNNING and not stale)
-            - is_operational: True when process is working correctly (STARTING or RUNNING)
+            - is_healthy: True when operating correctly (RUNNING, SLEEPING, or STARTING)
+            - is_operational: True when process is working correctly
             - reason: Human-readable explanation of current state
         """
         now = datetime.now()
         last_check = self.state.last_check_time
 
-        # Check if stale
+        # Check if stale (only relevant during RUNNING state)
         is_stale = False
         stale_seconds = 0
         if last_check:
@@ -1283,24 +1426,44 @@ Check broker positions and verify DB state.
 
         # Determine status flags
         status = self.state.status
-        is_healthy = status == MonitorStatus.RUNNING and not is_stale
-        is_operational = status in (MonitorStatus.STARTING, MonitorStatus.RUNNING)
 
-        # Generate human-readable reason
-        if status == MonitorStatus.STARTING:
-            reason = "Waiting for market to open"
+        # SLEEPING is a valid healthy state (off-market hours)
+        if status == MonitorStatus.SLEEPING:
+            is_healthy = True
+            is_operational = True
+            next_open = self.state.next_market_open
+            if next_open:
+                hours_until = (next_open - datetime.now(ET)).total_seconds() / 3600
+                reason = f"Sleeping until market open ({hours_until:.1f} hours)"
+            else:
+                reason = "Sleeping - off-market hours"
+        elif status == MonitorStatus.STARTING:
+            is_healthy = True
+            is_operational = True
+            reason = "Starting up, waiting for market"
         elif status == MonitorStatus.RUNNING:
             if is_stale:
+                is_healthy = False
                 reason = f"Stale - no check for {stale_seconds:.0f}s"
             else:
+                is_healthy = True
                 reason = "Actively monitoring positions"
+            is_operational = True
         elif status == MonitorStatus.STOPPED:
-            reason = "Monitor stopped (market closed)"
+            is_healthy = False
+            is_operational = False
+            reason = "Monitor stopped"
         elif status == MonitorStatus.STOPPING:
+            is_healthy = False
+            is_operational = False
             reason = "Shutting down"
         elif status == MonitorStatus.ERROR:
+            is_healthy = False
+            is_operational = False
             reason = "Error state - check logs"
         else:
+            is_healthy = False
+            is_operational = False
             reason = f"Unknown state: {status}"
 
         return {
