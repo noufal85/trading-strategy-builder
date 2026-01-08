@@ -468,9 +468,18 @@ class RealtimeStopLossMonitor:
             is_long = position.get('side') == 'LONG'
             position_id = position.get('id')
 
+            # Get entry price and ATR for calculations
+            entry_price = float(position.get('entry_price', 0))
+            atr_value = position.get('atr_value')
+            if atr_value:
+                atr_value = float(atr_value)
+
             # 1. Check break-even activation (one-time, highest priority)
             breakeven_stop = self._check_breakeven(position, current_price)
             if breakeven_stop:
+                old_stop = stop_price
+                profit_pct = self._calculate_profit_pct(entry_price, current_price, is_long)
+
                 logger.info(
                     f"BREAK-EVEN activated for {symbol}: "
                     f"stop {stop_price:.2f} → {breakeven_stop:.2f} "
@@ -482,6 +491,22 @@ class RealtimeStopLossMonitor:
                     is_breakeven=True,
                     is_long=is_long
                 )
+
+                # Log BREAKEVEN event to history
+                self._log_stop_history(
+                    position_id=position_id,
+                    symbol=symbol,
+                    event_type='BREAKEVEN',
+                    old_stop=old_stop,
+                    new_stop=breakeven_stop,
+                    current_price=current_price,
+                    high_water_mark=position.get('high_water_mark'),
+                    low_water_mark=position.get('low_water_mark'),
+                    profit_pct=profit_pct,
+                    atr_value=atr_value,
+                    notes=f"Break-even activated at {profit_pct:.2f}% profit"
+                )
+
                 stop_price = breakeven_stop  # Use new stop for subsequent checks
                 position['stop_price'] = breakeven_stop
                 position['breakeven_active'] = True
@@ -490,6 +515,9 @@ class RealtimeStopLossMonitor:
             trail_result = self._update_trailing_stop(position, current_price)
             if trail_result:
                 new_stop, new_watermark = trail_result
+                old_stop = stop_price
+                profit_pct = self._calculate_profit_pct(entry_price, current_price, is_long)
+
                 logger.info(
                     f"TRAILING STOP updated for {symbol}: "
                     f"stop {stop_price:.2f} → {new_stop:.2f} "
@@ -502,6 +530,22 @@ class RealtimeStopLossMonitor:
                     is_breakeven=False,
                     is_long=is_long
                 )
+
+                # Log TRAILING event to history
+                self._log_stop_history(
+                    position_id=position_id,
+                    symbol=symbol,
+                    event_type='TRAILING',
+                    old_stop=old_stop,
+                    new_stop=new_stop,
+                    current_price=current_price,
+                    high_water_mark=new_watermark if is_long else position.get('high_water_mark'),
+                    low_water_mark=new_watermark if not is_long else position.get('low_water_mark'),
+                    profit_pct=profit_pct,
+                    atr_value=atr_value,
+                    notes=f"Trailed {'up' if is_long else 'down'} ${abs(new_stop - old_stop):.2f}"
+                )
+
                 stop_price = new_stop  # Use new stop for stop hit check
 
             # 3. Check if stop hit
@@ -714,6 +758,89 @@ class RealtimeStopLossMonitor:
             if self.db_conn:
                 self.db_conn.rollback()
 
+    def _calculate_profit_pct(
+        self,
+        entry_price: float,
+        current_price: float,
+        is_long: bool
+    ) -> float:
+        """Calculate profit percentage for a position.
+
+        Args:
+            entry_price: Entry price
+            current_price: Current market price
+            is_long: True if long position
+
+        Returns:
+            Profit percentage (positive = profit, negative = loss)
+        """
+        if entry_price == 0:
+            return 0.0
+
+        if is_long:
+            return ((current_price - entry_price) / entry_price) * 100
+        else:
+            return ((entry_price - current_price) / entry_price) * 100
+
+    def _log_stop_history(
+        self,
+        position_id: int,
+        symbol: str,
+        event_type: str,
+        old_stop: Optional[float],
+        new_stop: float,
+        current_price: float,
+        high_water_mark: Optional[float] = None,
+        low_water_mark: Optional[float] = None,
+        profit_pct: Optional[float] = None,
+        atr_value: Optional[float] = None,
+        notes: Optional[str] = None
+    ) -> None:
+        """Insert record into stop_history table.
+
+        Args:
+            position_id: ID from positions table
+            symbol: Stock symbol
+            event_type: INITIAL, BREAKEVEN, TRAILING, STOP_HIT, EOD_CLOSE
+            old_stop: Previous stop price (None for INITIAL)
+            new_stop: New stop price
+            current_price: Market price at event time
+            high_water_mark: Highest price seen (for longs)
+            low_water_mark: Lowest price seen (for shorts)
+            profit_pct: Current profit percentage
+            atr_value: ATR value used in calculation
+            notes: Additional context
+        """
+        if not self.db_conn:
+            return
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("""
+                INSERT INTO gap_trading.stop_history (
+                    position_id, symbol, event_type, event_time,
+                    old_stop_price, new_stop_price, current_price,
+                    high_water_mark, low_water_mark, profit_pct,
+                    atr_value, notes
+                ) VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                position_id, symbol, event_type,
+                old_stop, new_stop, current_price,
+                high_water_mark, low_water_mark, profit_pct,
+                atr_value, notes
+            ))
+            self.db_conn.commit()
+            logger.debug(f"Logged {event_type} event for {symbol} (position {position_id})")
+
+        except Exception as e:
+            logger.error(f"Failed to log stop history for {symbol}: {e}")
+            # Don't raise - history logging should not break main flow
+            if self.db_conn:
+                try:
+                    self.db_conn.rollback()
+                except Exception:
+                    pass
+
     def _get_open_positions(self) -> List[Dict[str, Any]]:
         """Get all open gap trading positions from database.
 
@@ -806,6 +933,29 @@ class RealtimeStopLossMonitor:
         is_long = position['side'] == 'LONG'
         stop_order_id = position.get('stop_order_id')
         position_id = position['id']
+        stop_price = float(position.get('stop_price', 0))
+        entry_price = float(position.get('entry_price', 0))
+        atr_value = position.get('atr_value')
+        if atr_value:
+            atr_value = float(atr_value)
+
+        # Calculate profit at stop hit
+        profit_pct = self._calculate_profit_pct(entry_price, current_price, is_long)
+
+        # Log STOP_HIT event before attempting close
+        self._log_stop_history(
+            position_id=position_id,
+            symbol=symbol,
+            event_type='STOP_HIT',
+            old_stop=stop_price,
+            new_stop=stop_price,
+            current_price=current_price,
+            high_water_mark=position.get('high_water_mark'),
+            low_water_mark=position.get('low_water_mark'),
+            profit_pct=profit_pct,
+            atr_value=atr_value,
+            notes=f"Stop triggered at ${current_price:.2f}"
+        )
 
         logger.info(f"Triggering stop-loss close for {symbol}")
 
@@ -1043,6 +1193,21 @@ class RealtimeStopLossMonitor:
                         )
                         closed_count += 1
                         logger.info(f"Closed {symbol} @ ${exit_price:.2f} ({reason.value}) - VERIFIED")
+
+                        # Log EOD_CLOSE to stop history
+                        entry_price = position.get('entry_price', 0)
+                        stop_price = position.get('stop_price', 0)
+                        profit_pct = self._calculate_profit_pct(entry_price, exit_price, is_long) if entry_price > 0 else None
+                        self._log_stop_history(
+                            position_id=position_id,
+                            symbol=symbol,
+                            event_type='EOD_CLOSE',
+                            old_stop=stop_price,
+                            new_stop=stop_price,  # Stop didn't change, position was closed at EOD
+                            current_price=exit_price,
+                            profit_pct=profit_pct,
+                            notes=f"EOD close @ ${exit_price:.2f} ({reason.value})"
+                        )
                     else:
                         # Order placed but not verified - DO NOT update DB
                         logger.error(
