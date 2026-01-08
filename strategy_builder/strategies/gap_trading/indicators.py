@@ -293,22 +293,75 @@ def calculate_adx_score(adx: float) -> float:
     return round(score, 2)
 
 
+def get_market_cap_tier(market_cap: Optional[float]) -> str:
+    """Classify stock by market capitalization.
+
+    Args:
+        market_cap: Market capitalization in dollars
+
+    Returns:
+        Tier classification: MEGA, LARGE, MID, SMALL, MICRO
+    """
+    if market_cap is None or market_cap <= 0:
+        return "UNKNOWN"
+
+    if market_cap >= 200_000_000_000:  # $200B+
+        return "MEGA"
+    elif market_cap >= 10_000_000_000:  # $10B - $200B
+        return "LARGE"
+    elif market_cap >= 2_000_000_000:  # $2B - $10B
+        return "MID"
+    elif market_cap >= 300_000_000:  # $300M - $2B
+        return "SMALL"
+    else:  # < $300M
+        return "MICRO"
+
+
+def calculate_market_cap_score(market_cap: Optional[float]) -> float:
+    """Calculate market cap score (0-100) favoring larger caps.
+
+    Larger market caps are considered more stable and liquid.
+
+    Scores:
+        MEGA (>$200B): 100
+        LARGE ($10B-$200B): 85
+        MID ($2B-$10B): 70
+        SMALL ($300M-$2B): 55
+        MICRO (<$300M): 40
+        UNKNOWN: 50 (neutral)
+    """
+    tier = get_market_cap_tier(market_cap)
+
+    tier_scores = {
+        "MEGA": 100.0,
+        "LARGE": 85.0,
+        "MID": 70.0,
+        "SMALL": 55.0,
+        "MICRO": 40.0,
+        "UNKNOWN": 50.0
+    }
+
+    return tier_scores.get(tier, 50.0)
+
+
 def calculate_priority_score(
     gap_pct: float,
     volume_ratio: float,
     adx: Optional[float],
     rsi: Optional[float],
     gap_direction: str,
+    market_cap: Optional[float] = None,
     weights: Optional[dict] = None
 ) -> float:
     """Calculate composite priority score for signal ranking.
 
-    Formula:
+    Formula (default weights):
     priority_score = (
-        gap_score * 0.30 +
-        volume_score * 0.20 +
-        adx_score * 0.25 +
-        rsi_score * 0.25
+        gap_score * 0.25 +
+        volume_score * 0.15 +
+        adx_score * 0.30 +      # Increased from 0.25
+        rsi_score * 0.20 +
+        market_cap_score * 0.10  # NEW
     )
 
     Args:
@@ -317,18 +370,20 @@ def calculate_priority_score(
         adx: ADX value (0-100)
         rsi: RSI value (0-100)
         gap_direction: 'UP' or 'DOWN'
+        market_cap: Market capitalization in dollars (optional)
         weights: Optional custom weights dict
 
     Returns:
         Priority score (0-100)
     """
-    # Default weights
+    # Default weights (updated: more ADX weight, added market cap)
     if weights is None:
         weights = {
-            'gap': 0.30,
-            'volume': 0.20,
-            'adx': 0.25,
-            'rsi': 0.25
+            'gap': 0.25,        # Was 0.30
+            'volume': 0.15,     # Was 0.20
+            'adx': 0.30,        # Was 0.25 - INCREASED
+            'rsi': 0.20,        # Was 0.25
+            'market_cap': 0.10  # NEW
         }
 
     # Calculate component scores
@@ -344,12 +399,16 @@ def calculate_priority_score(
     # RSI score
     rsi_score = calculate_rsi_score(rsi, gap_direction) if rsi is not None else 50.0
 
+    # Market cap score (NEW)
+    mcap_score = calculate_market_cap_score(market_cap)
+
     # Weighted composite
     priority = (
         gap_score * weights['gap'] +
         volume_score * weights['volume'] +
         adx_score * weights['adx'] +
-        rsi_score * weights['rsi']
+        rsi_score * weights['rsi'] +
+        mcap_score * weights['market_cap']
     )
 
     return round(priority, 2)
