@@ -344,6 +344,57 @@ def calculate_market_cap_score(market_cap: Optional[float]) -> float:
     return tier_scores.get(tier, 50.0)
 
 
+def get_volatility_tier(volatility: Optional[float]) -> str:
+    """Classify stock by annualized volatility (volatility_20d).
+
+    Args:
+        volatility: Annualized volatility percentage (e.g., 30.0 for 30%)
+
+    Returns:
+        Tier classification: LOW, MEDIUM, HIGH, VERY_HIGH, EXTREME
+    """
+    if volatility is None or volatility <= 0:
+        return "UNKNOWN"
+
+    if volatility < 30:
+        return "LOW"
+    elif volatility < 50:
+        return "MEDIUM"
+    elif volatility < 80:
+        return "HIGH"
+    elif volatility < 120:
+        return "VERY_HIGH"
+    else:
+        return "EXTREME"
+
+
+def calculate_volatility_score(volatility: Optional[float]) -> float:
+    """Calculate volatility score (0-100) penalizing high volatility.
+
+    Lower volatility is preferred for more predictable gap behavior.
+
+    Scores (higher = better, lower volatility):
+        LOW (<30%): 100 - No penalty
+        MEDIUM (30-50%): 85 - Slight penalty
+        HIGH (50-80%): 70 - Moderate penalty
+        VERY_HIGH (80-120%): 50 - Heavy penalty
+        EXTREME (>120%): 30 - Maximum penalty
+        UNKNOWN: 70 (neutral-conservative)
+    """
+    tier = get_volatility_tier(volatility)
+
+    tier_scores = {
+        "LOW": 100.0,
+        "MEDIUM": 85.0,
+        "HIGH": 70.0,
+        "VERY_HIGH": 50.0,
+        "EXTREME": 30.0,
+        "UNKNOWN": 70.0
+    }
+
+    return tier_scores.get(tier, 70.0)
+
+
 def calculate_priority_score(
     gap_pct: float,
     volume_ratio: float,
@@ -351,17 +402,19 @@ def calculate_priority_score(
     rsi: Optional[float],
     gap_direction: str,
     market_cap: Optional[float] = None,
+    volatility: Optional[float] = None,
     weights: Optional[dict] = None
 ) -> float:
     """Calculate composite priority score for signal ranking.
 
     Formula (default weights):
     priority_score = (
-        gap_score * 0.25 +
-        volume_score * 0.15 +
-        adx_score * 0.30 +      # Increased from 0.25
+        gap_score * 0.23 +
+        volume_score * 0.14 +
+        adx_score * 0.28 +
         rsi_score * 0.20 +
-        market_cap_score * 0.10  # NEW
+        market_cap_score * 0.10 +
+        volatility_score * 0.05  # Penalty for high volatility
     )
 
     Args:
@@ -371,19 +424,21 @@ def calculate_priority_score(
         rsi: RSI value (0-100)
         gap_direction: 'UP' or 'DOWN'
         market_cap: Market capitalization in dollars (optional)
+        volatility: Annualized volatility percentage (optional)
         weights: Optional custom weights dict
 
     Returns:
         Priority score (0-100)
     """
-    # Default weights (updated: more ADX weight, added market cap)
+    # Default weights (with volatility penalty)
     if weights is None:
         weights = {
-            'gap': 0.25,        # Was 0.30
-            'volume': 0.15,     # Was 0.20
-            'adx': 0.30,        # Was 0.25 - INCREASED
-            'rsi': 0.20,        # Was 0.25
-            'market_cap': 0.10  # NEW
+            'gap': 0.23,         # Reduced slightly
+            'volume': 0.14,      # Reduced slightly
+            'adx': 0.28,         # Strong trend emphasis
+            'rsi': 0.20,         # Direction alignment
+            'market_cap': 0.10,  # Larger caps preferred
+            'volatility': 0.05   # Penalty for high volatility
         }
 
     # Calculate component scores
@@ -399,8 +454,11 @@ def calculate_priority_score(
     # RSI score
     rsi_score = calculate_rsi_score(rsi, gap_direction) if rsi is not None else 50.0
 
-    # Market cap score (NEW)
+    # Market cap score
     mcap_score = calculate_market_cap_score(market_cap)
+
+    # Volatility score (lower volatility = higher score)
+    vol_score = calculate_volatility_score(volatility)
 
     # Weighted composite
     priority = (
@@ -408,7 +466,8 @@ def calculate_priority_score(
         volume_score * weights['volume'] +
         adx_score * weights['adx'] +
         rsi_score * weights['rsi'] +
-        mcap_score * weights['market_cap']
+        mcap_score * weights['market_cap'] +
+        vol_score * weights['volatility']
     )
 
     return round(priority, 2)
