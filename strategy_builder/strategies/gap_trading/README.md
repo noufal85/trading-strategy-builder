@@ -277,6 +277,57 @@ monitor = RealtimeStopLossMonitor()
 monitor.start()  # Runs until market close
 ```
 
+### Priority Scoring (Updated 2026-01-08)
+
+Signals are ranked by a composite priority score that determines which gaps get traded. The scoring formula favors larger, more liquid stocks.
+
+#### Priority Score Formula
+
+```
+priority_score = (gap × 0.15) + (volume × 0.20) + (adx × 0.20) + (rsi × 0.15) + (market_cap × 0.20) + (volatility × 0.10)
+```
+
+#### Weight Distribution
+
+| Factor | Weight | Description |
+|--------|--------|-------------|
+| Gap % | 15% | Larger gaps score higher (5% gap = 100) |
+| **Volume** | **20%** | Higher volume vs average - emphasis on liquidity |
+| ADX | 20% | Trend strength (ADX 50 = 100) |
+| RSI | 15% | RSI alignment with gap direction |
+| **Market Cap** | **20%** | Larger caps strongly preferred |
+| **Volatility** | **10%** | Lower volatility scores higher |
+
+#### Market Cap Scoring
+
+| Tier | Market Cap | Score |
+|------|------------|-------|
+| MEGA | > $200B | 100 |
+| LARGE | $10B - $200B | 85 |
+| MID | $2B - $10B | 70 |
+| SMALL | $300M - $2B | 55 |
+| MICRO | < $300M | 40 |
+
+#### Volatility Scoring
+
+| Tier | Annualized Vol | Score |
+|------|----------------|-------|
+| LOW | < 30% | 100 |
+| MEDIUM | 30% - 50% | 85 |
+| HIGH | 50% - 80% | 70 |
+| VERY_HIGH | 80% - 120% | 50 |
+| EXTREME | > 120% | 30 |
+
+#### Position Tiers
+
+After scoring, positions are assigned to tiers affecting position size:
+
+| Tier | Rank | Size Multiplier |
+|------|------|-----------------|
+| top_tier | 1-2 | 1.20× |
+| mid_tier | 3-4 | 1.00× |
+| bottom_tier | 5+ | 0.80× |
+
 ### Risk Tiers
 
 Symbols are classified into risk tiers affecting position size:
