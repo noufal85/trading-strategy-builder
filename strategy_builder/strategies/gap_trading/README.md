@@ -1,7 +1,7 @@
 # Gap Trading Strategy
 
 **Created Date**: 2025-12-09
-**Updated Date**: 2025-12-17
+**Updated Date**: 2026-01-08
 
 A gap trading strategy that identifies and trades price gaps at market open, with confirmation-based entries and risk-managed position sizing.
 
@@ -32,6 +32,8 @@ gap_trading/
 │   └── scripts/
 │       └── run_backtest.py   # CLI script
 ├── config/                   # Strategy configuration
+├── direction_balancer.py     # LONG/SHORT position balancing (NEW)
+├── indicators.py             # Technical indicators (RSI, ADX, etc.)
 ├── order_manager.py          # Live order execution (Tradier/Alpaca)
 ├── position_manager.py       # Position tracking
 ├── position_sizer.py         # Position size calculation
@@ -40,7 +42,11 @@ gap_trading/
 ├── risk_tiers.py             # Symbol risk classification
 ├── signals.py                # Signal generation
 ├── universe.py               # Symbol universe management
-└── volatility.py             # Volatility calculations
+├── volatility.py             # Volatility calculations
+└── tests/
+    ├── test_direction_balancer.py  # Direction balancer tests (26 tests)
+    ├── test_integration.py
+    └── ...
 ```
 
 ## Backtesting Framework (backtest_v2)
@@ -282,6 +288,111 @@ Symbols are classified into risk tiers affecting position size:
 | MID_CAP | Mid cap stocks | 0.8 |
 | SMALL_CAP | Smaller, volatile | 0.6 |
 | HIGH_VOLATILITY | High beta stocks | 0.5 |
+
+### Direction Balancer (NEW - 2026-01-08)
+
+The `DirectionBalancer` ensures a diversified mix of LONG and SHORT positions, with dynamic weighting based on SPY's opening behavior relative to ATR.
+
+#### Features
+
+- **Default 50/50 Split**: By default, positions are equally distributed between LONG and SHORT
+- **SPY-Based Dynamic Weighting**: Allocation adjusts based on SPY gap/ATR ratio
+- **Minimum Direction Guarantee**: Never 0 positions in a direction if signals exist
+- **Shortfall Handling**: If not enough signals in one direction, fills from the other
+- **Priority Preservation**: Highest priority signals selected within each direction
+
+#### Market Bias Allocations
+
+| Market Bias | SPY Gap/ATR Ratio | Long % | Short % |
+|-------------|-------------------|--------|---------|
+| Strong Bullish | >= +1.0 | 70% | 30% |
+| Bullish | >= +0.5 | 60% | 40% |
+| Neutral | -0.5 to +0.5 | 50% | 50% |
+| Bearish | <= -0.5 | 40% | 60% |
+| Strong Bearish | <= -1.0 | 30% | 70% |
+
+#### Usage
+
+```python
+from strategy_builder.strategies.gap_trading.direction_balancer import (
+    DirectionBalancer,
+    MarketBias,
+    BalanceResult,
+)
+
+# Create balancer with default config
+balancer = DirectionBalancer()
+
+# Or with custom config
+config = {
+    'enabled': True,
+    'default_long_pct': 50,
+    'spy_thresholds': {
+        'strong_bullish': 1.0,
+        'bullish': 0.5,
+        'bearish': -0.5,
+        'strong_bearish': -1.0
+    },
+    'allocations': {
+        'strong_bullish': {'long': 70, 'short': 30},
+        'bullish': {'long': 60, 'short': 40},
+        'neutral': {'long': 50, 'short': 50},
+        'bearish': {'long': 40, 'short': 60},
+        'strong_bearish': {'long': 30, 'short': 70}
+    },
+    'min_per_direction_pct': 12.5
+}
+balancer = DirectionBalancer(config)
+
+# Balance signals
+result = balancer.balance_signals(
+    signals=all_signals,
+    max_positions=8,
+    spy_gap_pct=1.5,      # SPY gapped up 1.5%
+    spy_atr_pct=2.0       # SPY ATR is 2%
+)
+
+# Access results
+print(f"Market Bias: {result.market_bias}")  # MarketBias.BULLISH
+print(f"Selected: {result.long_count} LONG, {result.short_count} SHORT")
+print(balancer.get_balance_summary(result))
+```
+
+#### Configuration via Airflow Variable
+
+The balancer integrates with the `gap_trading_config` Airflow Variable:
+
+```json
+{
+  "direction_balancing": {
+    "enabled": true,
+    "default_long_pct": 50,
+    "spy_thresholds": {
+      "strong_bullish": 1.0,
+      "bullish": 0.5,
+      "bearish": -0.5,
+      "strong_bearish": -1.0
+    },
+    "allocations": {
+      "strong_bullish": {"long": 70, "short": 30},
+      "bullish": {"long": 60, "short": 40},
+      "neutral": {"long": 50, "short": 50},
+      "bearish": {"long": 40, "short": 60},
+      "strong_bearish": {"long": 30, "short": 70}
+    },
+    "min_per_direction_pct": 12.5
+  }
+}
+```
+
+To disable direction balancing (fall back to pure priority sort):
+```json
+{
+  "direction_balancing": {
+    "enabled": false
+  }
+}
+```
 
 ## Configuration
 
