@@ -16,21 +16,48 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional, List, Dict, Any, Tuple, TYPE_CHECKING
 
-from .error_handling import (
-    ErrorCategory,
-    GapTradingError,
-    NetworkError,
-    AuthenticationError,
-    BusinessError,
-    InsufficientFundsError,
-    RateLimitError,
-    CircuitOpenError,
-    retry_with_backoff,
-    with_error_handling,
-    get_broker_circuit_breaker,
-    wrap_exception,
-    CircuitBreaker
-)
+# Handle both package and standalone import contexts
+try:
+    from .error_handling import (
+        ErrorCategory,
+        GapTradingError,
+        NetworkError,
+        AuthenticationError,
+        BusinessError,
+        InsufficientFundsError,
+        RateLimitError,
+        CircuitOpenError,
+        retry_with_backoff,
+        with_error_handling,
+        get_broker_circuit_breaker,
+        wrap_exception,
+        CircuitBreaker
+    )
+except ImportError:
+    # Standalone context - load via importlib
+    import importlib.util
+    import os
+    _module_dir = os.path.dirname(os.path.abspath(__file__))
+    _eh_spec = importlib.util.spec_from_file_location(
+        "error_handling",
+        os.path.join(_module_dir, "error_handling.py")
+    )
+    _error_handling = importlib.util.module_from_spec(_eh_spec)
+    _eh_spec.loader.exec_module(_error_handling)
+
+    ErrorCategory = _error_handling.ErrorCategory
+    GapTradingError = _error_handling.GapTradingError
+    NetworkError = _error_handling.NetworkError
+    AuthenticationError = _error_handling.AuthenticationError
+    BusinessError = _error_handling.BusinessError
+    InsufficientFundsError = _error_handling.InsufficientFundsError
+    RateLimitError = _error_handling.RateLimitError
+    CircuitOpenError = _error_handling.CircuitOpenError
+    retry_with_backoff = _error_handling.retry_with_backoff
+    with_error_handling = _error_handling.with_error_handling
+    get_broker_circuit_breaker = _error_handling.get_broker_circuit_breaker
+    wrap_exception = _error_handling.wrap_exception
+    CircuitBreaker = _error_handling.CircuitBreaker
 
 if TYPE_CHECKING:
     from stock_data_web.alpaca import AlpacaClient
