@@ -92,6 +92,12 @@ from .backtest import (
     GapTradingBacktester,
     run_backtest,
 )
+from .direction_balancer import (
+    MarketBias,
+    BalanceResult,
+    DirectionBalancer,
+    create_balancer_from_config,
+)
 
 __all__ = [
     # Config
@@ -143,4 +149,9 @@ __all__ = [
     'Position',
     'ExitInfo',
     'PositionManager',
+    # Direction Balancing
+    'MarketBias',
+    'BalanceResult',
+    'DirectionBalancer',
+    'create_balancer_from_config',
 ]
