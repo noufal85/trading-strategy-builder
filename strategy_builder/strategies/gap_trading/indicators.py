@@ -407,14 +407,14 @@ def calculate_priority_score(
 ) -> float:
     """Calculate composite priority score for signal ranking.
 
-    Formula (default weights):
+    Formula (default weights - updated 2026-01-08 to favor larger, more liquid stocks):
     priority_score = (
-        gap_score * 0.23 +
-        volume_score * 0.14 +
-        adx_score * 0.28 +
-        rsi_score * 0.20 +
-        market_cap_score * 0.10 +
-        volatility_score * 0.05  # Penalty for high volatility
+        gap_score * 0.15 +
+        volume_score * 0.20 +      # Increased for liquidity
+        adx_score * 0.20 +
+        rsi_score * 0.15 +
+        market_cap_score * 0.20 +  # Increased to favor larger caps
+        volatility_score * 0.10    # Increased penalty for high volatility
     )
 
     Args:
@@ -430,15 +430,15 @@ def calculate_priority_score(
     Returns:
         Priority score (0-100)
     """
-    # Default weights (with volatility penalty)
+    # Default weights (2026-01-08: Updated to favor larger, more liquid stocks)
     if weights is None:
         weights = {
-            'gap': 0.23,         # Reduced slightly
-            'volume': 0.14,      # Reduced slightly
-            'adx': 0.28,         # Strong trend emphasis
-            'rsi': 0.20,         # Direction alignment
-            'market_cap': 0.10,  # Larger caps preferred
-            'volatility': 0.05   # Penalty for high volatility
+            'gap': 0.15,         # Gap size importance
+            'volume': 0.20,      # Liquidity emphasis (increased)
+            'adx': 0.20,         # Trend strength
+            'rsi': 0.15,         # Direction alignment
+            'market_cap': 0.20,  # Larger caps strongly preferred (increased)
+            'volatility': 0.10   # Penalty for high volatility (increased)
         }
 
     # Calculate component scores
