@@ -1471,21 +1471,24 @@ Check broker positions and verify DB state.
 
         logger.critical(f"EOD FAILURE ALERT:\n{message}")
 
-        # Try to send via Telegram
+        # Try to send via Telegram (Gap Trading bot - one-way notifications)
         try:
             # Try importing from airflow_common if available
             try:
+                import os
                 from airflow_common.notifications.telegram import TelegramNotifier
-                notifier = TelegramNotifier()
+                gap_bot_token = os.environ.get('GAP_TRADING_BOT_TOKEN')
+                gap_chat_id = os.environ.get('GAP_TRADING_BOT_CHAT_ID')
+                notifier = TelegramNotifier(bot_token=gap_bot_token, chat_id=gap_chat_id)
                 notifier.send_message(message, parse_mode="Markdown")
-                logger.info("EOD failure alert sent via Telegram")
+                logger.info("EOD failure alert sent via Gap Trading bot")
             except ImportError:
-                # Fallback: try direct telegram via environment
+                # Fallback: try direct telegram via environment (Gap Trading bot)
                 import os
                 import requests
 
-                bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
-                chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+                bot_token = os.environ.get('GAP_TRADING_BOT_TOKEN')
+                chat_id = os.environ.get('GAP_TRADING_BOT_CHAT_ID')
 
                 if bot_token and chat_id:
                     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -1495,13 +1498,13 @@ Check broker positions and verify DB state.
                         'parse_mode': 'Markdown'
                     }, timeout=10)
                     if response.ok:
-                        logger.info("EOD failure alert sent via Telegram (direct)")
+                        logger.info("EOD failure alert sent via Gap Trading bot (direct)")
                     else:
                         logger.warning(f"Telegram API error: {response.text}")
                 else:
                     logger.warning(
                         "Cannot send Telegram alert - no credentials. "
-                        "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables."
+                        "Set GAP_TRADING_BOT_TOKEN and GAP_TRADING_BOT_CHAT_ID environment variables."
                     )
         except Exception as e:
             logger.error(f"Failed to send Telegram alert: {e}")

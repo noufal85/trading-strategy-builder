@@ -28,9 +28,9 @@ services:
       - EOD_CLOSE_TIME=${EOD_CLOSE_TIME:-15:55}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 
-      # Telegram notifications (optional)
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      # Gap Trading Bot (one-way notifications)
+      - GAP_TRADING_BOT_TOKEN=${GAP_TRADING_BOT_TOKEN:-}
+      - GAP_TRADING_BOT_CHAT_ID=${GAP_TRADING_BOT_CHAT_ID:-}
 
     volumes:
       # Mount packages for development
