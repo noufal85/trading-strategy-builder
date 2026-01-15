@@ -212,6 +212,7 @@ class RealtimeStopLossMonitor:
         self.on_eod_close = on_eod_close
 
         self._running = False
+        self._db_conn_string = None  # Store for reconnection
         self._setup_signal_handlers()
 
         logger.info(
@@ -229,6 +230,43 @@ class RealtimeStopLossMonitor:
         """Handle shutdown signal."""
         logger.info(f"Received signal {signum}, initiating shutdown...")
         self.stop()
+
+    def _ensure_db_connection(self) -> bool:
+        """Verify DB connection is alive, reconnect if needed.
+
+        This prevents stale connection issues that cause silent failures.
+
+        Returns:
+            True if connection is healthy or was successfully reconnected
+        """
+        if not self.db_conn:
+            logger.warning("No database connection available")
+            return False
+
+        try:
+            # Test connection with simple query
+            cursor = self.db_conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            cursor.close()
+            return True
+        except Exception as e:
+            logger.warning(f"Database connection lost: {e}")
+
+            # Attempt reconnection if we have connection string
+            if self._db_conn_string:
+                try:
+                    import psycopg2
+                    logger.info("Attempting to reconnect to database...")
+                    self.db_conn = psycopg2.connect(self._db_conn_string)
+                    logger.info("Database reconnection successful")
+                    return True
+                except Exception as reconnect_error:
+                    logger.error(f"Database reconnection failed: {reconnect_error}")
+                    return False
+            else:
+                logger.error("Cannot reconnect - no connection string stored")
+                return False
 
     def start(self):
         """Start the monitoring loop (runs 24/7).
@@ -437,13 +475,21 @@ class RealtimeStopLossMonitor:
         if now >= self.config.eod_close_datetime:
             return
 
+        # Ensure database connection is healthy (prevents stale connection issues)
+        if not self._ensure_db_connection():
+            logger.error("Database connection unavailable - skipping check cycle")
+            return
+
         # Get open positions
         positions = self._get_open_positions()
         self.state.positions_monitored = len(positions)
 
         if not positions:
-            logger.debug("No open positions to monitor")
+            # Log at INFO level so we can see the monitor is working
+            logger.info(f"[Check {now.strftime('%H:%M:%S')}] No open positions to monitor")
             return
+
+        logger.info(f"[Check {now.strftime('%H:%M:%S')}] Checking {len(positions)} positions...")
 
         # Get current quotes
         symbols = [p['symbol'] for p in positions]
@@ -1690,6 +1736,8 @@ def run_monitor(
         db_conn=db_conn,
         config=config
     )
+    # Store connection string for reconnection capability
+    monitor._db_conn_string = conn_string
 
     try:
         monitor.start()
