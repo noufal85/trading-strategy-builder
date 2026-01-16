@@ -1,16 +1,18 @@
 """Direction Balancer for Gap Trading Strategy.
 
-This module provides intelligent position direction balancing that ensures
-a mix of LONG and SHORT positions, with dynamic weighting based on SPY's
-opening behavior relative to ATR.
+This module provides market bias calculation for gap trading signals.
+Market direction is used to boost/penalize signal priority scores,
+with final selection being purely merit-based (no allocation quotas).
 
-Features:
-- Default 50/50 split between LONG and SHORT positions
-- SPY-based dynamic weighting (30-70% range based on SPY gap/ATR ratio)
-- Minimum guarantee - never 0 in either direction if signals exist
-- Priority score preservation within each direction's allocation
+Features (Updated 2026-01-15):
+- SPY-based market bias calculation (BULLISH, BEARISH, NEUTRAL)
+- Market bias passed to priority scoring for +15/-10 adjustments
+- Merit-based selection: top N signals by priority score
+- NO forced allocation splitting (removed 30-70% quotas)
+- NO minimum guarantees per direction (removed)
 
 Created: 2026-01-08
+Updated: 2026-01-15 - Removed allocation splitting, switched to merit-based selection
 """
 
 import logging
@@ -32,49 +34,48 @@ class MarketBias(Enum):
 
 @dataclass
 class BalanceResult:
-    """Result of direction balancing operation."""
+    """Result of direction balancing operation.
+
+    Updated 2026-01-15: Simplified for merit-based selection.
+    Removed: target counts, percentages, minimum_applied, shortfall_filled.
+    """
     signals: List[Dict]
     long_count: int
     short_count: int
-    target_long_count: int
-    target_short_count: int
     market_bias: MarketBias
     spy_gap_pct: float
     spy_atr_pct: float
     spy_gap_atr_ratio: float
-    long_pct: float
-    short_pct: float
-    minimum_applied: bool
-    shortfall_filled: bool
+    # Legacy fields for backwards compatibility (always set to defaults)
+    target_long_count: int = 0
+    target_short_count: int = 0
+    long_pct: float = 0.0
+    short_pct: float = 0.0
+    minimum_applied: bool = False
+    shortfall_filled: bool = False
 
 
-# Default configuration
+# Default configuration (simplified for merit-based selection)
 DEFAULT_CONFIG = {
     "enabled": True,
-    "default_long_pct": 50,
     "spy_thresholds": {
         "strong_bullish": 1.0,
         "bullish": 0.5,
         "bearish": -0.5,
         "strong_bearish": -1.0
-    },
-    "allocations": {
-        "strong_bullish": {"long": 70, "short": 30},
-        "bullish": {"long": 60, "short": 40},
-        "neutral": {"long": 50, "short": 50},
-        "bearish": {"long": 40, "short": 60},
-        "strong_bearish": {"long": 30, "short": 70}
-    },
-    "min_per_direction_pct": 12.5  # Minimum 12.5% in each direction
+    }
+    # Removed: allocations, min_per_direction_pct (no longer used)
 }
 
 
 class DirectionBalancer:
-    """Balances LONG/SHORT signal selection based on SPY behavior.
+    """Provides market bias calculation for gap trading signals.
 
-    This class ensures portfolio diversification by maintaining a mix of
-    long and short positions, with dynamic allocation based on market
-    conditions indicated by SPY's opening gap relative to its ATR.
+    Updated 2026-01-15: Simplified to merit-based selection.
+    - Calculates market bias from SPY gap/ATR ratio
+    - Market bias is used for priority score adjustments (done in indicators.py)
+    - Selection is purely merit-based: top N signals by priority score
+    - NO allocation quotas or minimum guarantees
 
     Example:
         >>> balancer = DirectionBalancer()
@@ -85,6 +86,7 @@ class DirectionBalancer:
         ...     spy_atr_pct=2.0
         ... )
         >>> print(f"Selected: {result.long_count} LONG, {result.short_count} SHORT")
+        >>> print(f"Market bias: {result.market_bias.value}")
     """
 
     def __init__(self, config: Optional[Dict] = None):
@@ -92,21 +94,15 @@ class DirectionBalancer:
 
         Args:
             config: Configuration dictionary. If None, uses defaults.
-                - enabled: Whether balancing is active (default: True)
-                - default_long_pct: Default long allocation % (default: 50)
+                - enabled: Whether to calculate market bias (default: True)
                 - spy_thresholds: Thresholds for market bias classification
-                - allocations: Long/short percentages for each bias level
-                - min_per_direction_pct: Minimum % in each direction
         """
         self.config = {**DEFAULT_CONFIG, **(config or {})}
         self.enabled = self.config.get("enabled", True)
-        self.default_long_pct = self.config.get("default_long_pct", 50)
         self.thresholds = self.config.get("spy_thresholds", DEFAULT_CONFIG["spy_thresholds"])
-        self.allocations = self.config.get("allocations", DEFAULT_CONFIG["allocations"])
-        self.min_per_direction_pct = self.config.get("min_per_direction_pct", 12.5)
 
         logger.debug(f"DirectionBalancer initialized: enabled={self.enabled}, "
-                    f"default_long_pct={self.default_long_pct}")
+                    f"merit-based selection (no allocation quotas)")
 
     def calculate_spy_bias(self, spy_gap_pct: float, spy_atr_pct: float) -> Tuple[MarketBias, float]:
         """Determine market bias from SPY opening.
@@ -140,38 +136,6 @@ class DirectionBalancer:
 
         return bias, ratio
 
-    def get_allocation(self, bias: MarketBias, max_positions: int) -> Tuple[int, int, float, float]:
-        """Get (long_count, short_count) based on bias.
-
-        Args:
-            bias: Market bias from SPY analysis
-            max_positions: Maximum number of positions to take
-
-        Returns:
-            Tuple of (long_count, short_count, long_pct, short_pct)
-        """
-        alloc = self.allocations.get(bias.value, {"long": 50, "short": 50})
-        long_pct = alloc["long"]
-        short_pct = alloc["short"]
-
-        # Calculate raw counts
-        long_count = round(max_positions * long_pct / 100)
-        short_count = max_positions - long_count
-
-        # Apply minimum guarantee
-        min_per_dir = max(1, int(max_positions * self.min_per_direction_pct / 100))
-
-        if long_count < min_per_dir and short_count > min_per_dir:
-            long_count = min_per_dir
-            short_count = max_positions - long_count
-            logger.info(f"Applied minimum guarantee: adjusted to {long_count} LONG, {short_count} SHORT")
-        elif short_count < min_per_dir and long_count > min_per_dir:
-            short_count = min_per_dir
-            long_count = max_positions - short_count
-            logger.info(f"Applied minimum guarantee: adjusted to {long_count} LONG, {short_count} SHORT")
-
-        return long_count, short_count, long_pct, short_pct
-
     def balance_signals(
         self,
         signals: List[Dict],
@@ -181,7 +145,11 @@ class DirectionBalancer:
         signal_type_key: str = "signal_type",
         priority_key: str = "priority_score"
     ) -> BalanceResult:
-        """Select balanced signals from pool.
+        """Select top signals by priority score (merit-based).
+
+        Updated 2026-01-15: Simplified to pure merit-based selection.
+        Market bias is calculated but only used for metadata/reporting.
+        Priority scores should already include market direction boost.
 
         Args:
             signals: List of signal dictionaries
@@ -194,117 +162,36 @@ class DirectionBalancer:
         Returns:
             BalanceResult with selected signals and metadata
         """
-        if not self.enabled:
-            # Fall back to pure priority sort
-            logger.info("Direction balancing disabled, using pure priority sort")
-            sorted_signals = sorted(signals, key=lambda x: x.get(priority_key, 0), reverse=True)
-            selected = sorted_signals[:max_positions]
+        # Calculate market bias (for metadata and reporting)
+        market_bias, gap_atr_ratio = self.calculate_spy_bias(spy_gap_pct, spy_atr_pct)
 
-            long_count = sum(1 for s in selected if s.get(signal_type_key) == "BUY")
-            short_count = len(selected) - long_count
-
-            return BalanceResult(
-                signals=selected,
-                long_count=long_count,
-                short_count=short_count,
-                target_long_count=0,
-                target_short_count=0,
-                market_bias=MarketBias.NEUTRAL,
-                spy_gap_pct=spy_gap_pct,
-                spy_atr_pct=spy_atr_pct,
-                spy_gap_atr_ratio=0.0,
-                long_pct=0.0,
-                short_pct=0.0,
-                minimum_applied=False,
-                shortfall_filled=False
-            )
-
-        # 1. Separate signals by direction
+        # Count available signals by direction
         longs = [s for s in signals if s.get(signal_type_key) == "BUY"]
         shorts = [s for s in signals if s.get(signal_type_key) == "SELL_SHORT"]
 
         logger.info(f"Signal pool: {len(longs)} LONG, {len(shorts)} SHORT (total: {len(signals)})")
+        logger.info(f"Market bias: {market_bias.value} (SPY gap/ATR ratio: {gap_atr_ratio:.2f})")
 
-        # 2. Sort each pool by priority score
-        longs.sort(key=lambda x: x.get(priority_key, 0), reverse=True)
-        shorts.sort(key=lambda x: x.get(priority_key, 0), reverse=True)
+        # Sort ALL signals by priority score (already includes market direction boost)
+        sorted_signals = sorted(signals, key=lambda x: x.get(priority_key, 0), reverse=True)
 
-        # 3. Calculate market bias and allocation
-        market_bias, gap_atr_ratio = self.calculate_spy_bias(spy_gap_pct, spy_atr_pct)
-        target_long, target_short, long_pct, short_pct = self.get_allocation(market_bias, max_positions)
+        # Select top N signals - pure merit-based, no quotas
+        selected = sorted_signals[:max_positions]
 
-        logger.info(f"Target allocation: {target_long} LONG ({long_pct}%), {target_short} SHORT ({short_pct}%)")
+        # Count final selection by direction
+        final_long_count = sum(1 for s in selected if s.get(signal_type_key) == "BUY")
+        final_short_count = len(selected) - final_long_count
 
-        # 4. Select from each pool
-        selected_longs = longs[:target_long]
-        selected_shorts = shorts[:target_short]
-
-        minimum_applied = False
-        shortfall_filled = False
-
-        # 5. Handle shortfall - if not enough signals in one direction
-        actual_long = len(selected_longs)
-        actual_short = len(selected_shorts)
-
-        if actual_long < target_long:
-            # Not enough longs, fill with more shorts
-            shortfall = target_long - actual_long
-            additional_shorts = shorts[target_short:target_short + shortfall]
-            selected_shorts.extend(additional_shorts)
-            shortfall_filled = True
-            logger.info(f"Long shortfall: {shortfall}, filled with additional shorts")
-
-        if actual_short < target_short:
-            # Not enough shorts, fill with more longs
-            shortfall = target_short - actual_short
-            additional_longs = longs[target_long:target_long + shortfall]
-            selected_longs.extend(additional_longs)
-            shortfall_filled = True
-            logger.info(f"Short shortfall: {shortfall}, filled with additional longs")
-
-        # 6. Apply minimum guarantee (if both directions have signals)
-        min_per_dir = max(1, int(max_positions * self.min_per_direction_pct / 100))
-
-        if len(longs) > 0 and len(selected_longs) == 0 and len(shorts) >= max_positions:
-            # We have longs but didn't select any - force at least minimum
-            selected_longs = longs[:min_per_dir]
-            selected_shorts = selected_shorts[:max_positions - min_per_dir]
-            minimum_applied = True
-            logger.warning(f"Forced minimum {min_per_dir} LONG positions")
-
-        if len(shorts) > 0 and len(selected_shorts) == 0 and len(longs) >= max_positions:
-            # We have shorts but didn't select any - force at least minimum
-            selected_shorts = shorts[:min_per_dir]
-            selected_longs = selected_longs[:max_positions - min_per_dir]
-            minimum_applied = True
-            logger.warning(f"Forced minimum {min_per_dir} SHORT positions")
-
-        # 7. Combine and re-sort by priority for tier assignment
-        combined = selected_longs + selected_shorts
-        combined.sort(key=lambda x: x.get(priority_key, 0), reverse=True)
-
-        # Ensure we don't exceed max positions
-        combined = combined[:max_positions]
-
-        final_long_count = sum(1 for s in combined if s.get(signal_type_key) == "BUY")
-        final_short_count = len(combined) - final_long_count
-
-        logger.info(f"Final selection: {final_long_count} LONG, {final_short_count} SHORT")
+        logger.info(f"Merit-based selection: {final_long_count} LONG, {final_short_count} SHORT")
 
         return BalanceResult(
-            signals=combined,
+            signals=selected,
             long_count=final_long_count,
             short_count=final_short_count,
-            target_long_count=target_long,
-            target_short_count=target_short,
             market_bias=market_bias,
             spy_gap_pct=spy_gap_pct,
             spy_atr_pct=spy_atr_pct,
-            spy_gap_atr_ratio=gap_atr_ratio,
-            long_pct=long_pct,
-            short_pct=short_pct,
-            minimum_applied=minimum_applied,
-            shortfall_filled=shortfall_filled
+            spy_gap_atr_ratio=gap_atr_ratio
         )
 
     def get_balance_summary(self, result: BalanceResult) -> str:
@@ -317,17 +204,12 @@ class DirectionBalancer:
             Formatted summary string
         """
         lines = [
-            f"Direction Balance Summary:",
+            f"Selection Summary (Merit-Based):",
             f"  SPY Gap: {result.spy_gap_pct:+.2f}% (ATR ratio: {result.spy_gap_atr_ratio:+.2f})",
             f"  Market Bias: {result.market_bias.value.replace('_', ' ').title()}",
-            f"  Target Allocation: {result.long_pct:.0f}% LONG / {result.short_pct:.0f}% SHORT",
-            f"  Actual Selection: {result.long_count} LONG, {result.short_count} SHORT",
+            f"  Selected: {result.long_count} LONG, {result.short_count} SHORT",
+            f"  Note: Selection by priority score (no allocation quotas)",
         ]
-
-        if result.minimum_applied:
-            lines.append("  Note: Minimum direction guarantee applied")
-        if result.shortfall_filled:
-            lines.append("  Note: Shortfall filled from opposite direction")
 
         return "\n".join(lines)
 

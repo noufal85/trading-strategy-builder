@@ -19,6 +19,7 @@ class PositionStatus(str, Enum):
     OPEN = 'OPEN'                # Position is open
     STOPPED = 'STOPPED'          # Closed by stop-loss
     EOD_CLOSED = 'EOD_CLOSED'    # Closed at end of day
+    MAX_HOLD_CLOSED = 'MAX_HOLD_CLOSED'  # Closed due to max hold days reached
     MANUAL_CLOSED = 'MANUAL_CLOSED'  # Manually closed
     ERROR = 'ERROR'              # Error state
 
@@ -609,3 +610,188 @@ class PositionManager:
             realized_pnl=float(row[16]) if row[16] else None,
             trade_date=row[17]
         )
+
+    # ==========================================================================
+    # Overnight Holding Methods (Added 2026-01-15)
+    # ==========================================================================
+
+    def mark_for_overnight_hold(
+        self,
+        position_id: int,
+        trend_status: str = "TRENDING"
+    ) -> bool:
+        """Mark position to be held overnight instead of closing at EOD.
+
+        Args:
+            position_id: Position ID to mark
+            trend_status: Trend status (TRENDING, NOT_TRENDING)
+
+        Returns:
+            True if successful
+        """
+        if not self.db_conn:
+            logger.warning("No DB connection for overnight hold marking")
+            return False
+
+        try:
+            cursor = self.db_conn.cursor()
+
+            # Get current days_held
+            cursor.execute("""
+                SELECT COALESCE(days_held, 1) FROM gap_trading.positions WHERE id = %s
+            """, (position_id,))
+            row = cursor.fetchone()
+            if not row:
+                logger.warning(f"Position {position_id} not found")
+                return False
+
+            current_days = row[0]
+            new_days = current_days + 1
+
+            # Update position with overnight hold flag
+            cursor.execute("""
+                UPDATE gap_trading.positions SET
+                    hold_overnight = TRUE,
+                    trend_status = %s,
+                    days_held = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (trend_status, new_days, position_id))
+
+            self.db_conn.commit()
+            logger.info(f"Marked position {position_id} for overnight hold (days_held={new_days})")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to mark overnight hold for {position_id}: {e}")
+            if self.db_conn:
+                self.db_conn.rollback()
+            return False
+
+    def get_overnight_positions(self) -> List[Dict[str, Any]]:
+        """Get positions marked for overnight hold.
+
+        Returns:
+            List of position dictionaries
+        """
+        if not self.db_conn:
+            return []
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("""
+                SELECT id, symbol, side, quantity, entry_price, stop_price,
+                       days_held, hold_overnight, trend_status, trade_date
+                FROM gap_trading.positions
+                WHERE status = 'OPEN' AND hold_overnight = TRUE
+                ORDER BY days_held DESC, trade_date
+            """)
+
+            columns = ['id', 'symbol', 'side', 'quantity', 'entry_price',
+                      'stop_price', 'days_held', 'hold_overnight', 'trend_status', 'trade_date']
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+        except Exception as e:
+            logger.error(f"Failed to get overnight positions: {e}")
+            return []
+
+    def reset_overnight_flags(self) -> int:
+        """Reset overnight hold flags at start of new trading day.
+
+        Should be called at market open.
+
+        Returns:
+            Number of positions reset
+        """
+        if not self.db_conn:
+            return 0
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("""
+                UPDATE gap_trading.positions SET
+                    hold_overnight = FALSE,
+                    updated_at = NOW()
+                WHERE status = 'OPEN' AND hold_overnight = TRUE
+                RETURNING id
+            """)
+
+            reset_ids = [row[0] for row in cursor.fetchall()]
+            self.db_conn.commit()
+
+            if reset_ids:
+                logger.info(f"Reset overnight flags for {len(reset_ids)} positions")
+
+            return len(reset_ids)
+
+        except Exception as e:
+            logger.error(f"Failed to reset overnight flags: {e}")
+            if self.db_conn:
+                self.db_conn.rollback()
+            return 0
+
+    def get_positions_at_max_hold(self, max_days: int = 2) -> List[Dict[str, Any]]:
+        """Get positions that have reached maximum hold days.
+
+        Args:
+            max_days: Maximum days to hold (default 2)
+
+        Returns:
+            List of position dictionaries at max hold
+        """
+        if not self.db_conn:
+            return []
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("""
+                SELECT id, symbol, side, quantity, entry_price, stop_price,
+                       days_held, trade_date
+                FROM gap_trading.positions
+                WHERE status = 'OPEN' AND days_held >= %s
+                ORDER BY days_held DESC
+            """, (max_days,))
+
+            columns = ['id', 'symbol', 'side', 'quantity', 'entry_price',
+                      'stop_price', 'days_held', 'trade_date']
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+        except Exception as e:
+            logger.error(f"Failed to get positions at max hold: {e}")
+            return []
+
+    def get_existing_position_value(self) -> Dict[str, Any]:
+        """Get total value and count of existing open positions.
+
+        Used for position carryover budget calculation.
+
+        Returns:
+            Dictionary with total_value, count, and symbols
+        """
+        if not self.db_conn:
+            return {'total_value': 0.0, 'count': 0, 'symbols': []}
+
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("""
+                SELECT symbol, quantity, entry_price
+                FROM gap_trading.positions
+                WHERE status = 'OPEN'
+            """)
+
+            total_value = 0.0
+            symbols = []
+            for row in cursor.fetchall():
+                symbol, qty, price = row
+                total_value += abs(qty) * float(price)
+                symbols.append(symbol)
+
+            return {
+                'total_value': total_value,
+                'count': len(symbols),
+                'symbols': symbols
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get existing position value: {e}")
+            return {'total_value': 0.0, 'count': 0, 'symbols': []}

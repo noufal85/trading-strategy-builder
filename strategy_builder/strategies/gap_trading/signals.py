@@ -50,6 +50,9 @@ class SignalReason(Enum):
     REFERENCE_ONLY = "Reference symbol - no trading"
     MARKET_CLOSED = "Market is closed"
     INSUFFICIENT_DATA = "Insufficient data for analysis"
+    # Directional SMA filters (2026-01-15)
+    LONG_BELOW_SMA = "Long signal rejected: price below 20-day SMA"
+    SHORT_ABOVE_SMA = "Short signal rejected: price above 20-day SMA"
 
 
 @dataclass
@@ -380,7 +383,8 @@ class SignalGenerator:
         confirmation: GapConfirmation,
         atr: float,
         atr_pct: float,
-        current_price: Optional[float] = None
+        current_price: Optional[float] = None,
+        sma_20: Optional[float] = None
     ) -> TradeSignal:
         """Generate a trade signal from confirmed gap.
 
@@ -389,6 +393,7 @@ class SignalGenerator:
             atr: Current ATR value
             atr_pct: ATR as percentage of price
             current_price: Current price (defaults to confirmation price)
+            sma_20: 20-day Simple Moving Average (for directional filter)
 
         Returns:
             TradeSignal with entry and risk parameters
@@ -427,6 +432,25 @@ class SignalGenerator:
                 filter_result, gap_info, confirmation,
                 position_mult, stop_mult
             )
+
+        # Directional SMA filter (2026-01-15)
+        # LONG: only if price > SMA_20
+        # SHORT: only if price < SMA_20
+        if sma_20 is not None:
+            if gap_info.gap_direction == GapDirection.UP and entry_price < sma_20:
+                logger.info(f"{symbol}: LONG rejected - price {entry_price:.2f} below SMA_20 {sma_20:.2f}")
+                return self._no_trade_signal(
+                    symbol, entry_price, atr, atr_pct, risk_tier,
+                    SignalReason.LONG_BELOW_SMA, gap_info, confirmation,
+                    position_mult, stop_mult
+                )
+            elif gap_info.gap_direction == GapDirection.DOWN and entry_price > sma_20:
+                logger.info(f"{symbol}: SHORT rejected - price {entry_price:.2f} above SMA_20 {sma_20:.2f}")
+                return self._no_trade_signal(
+                    symbol, entry_price, atr, atr_pct, risk_tier,
+                    SignalReason.SHORT_ABOVE_SMA, gap_info, confirmation,
+                    position_mult, stop_mult
+                )
 
         # Generate signal based on gap direction
         if gap_info.gap_direction == GapDirection.UP:

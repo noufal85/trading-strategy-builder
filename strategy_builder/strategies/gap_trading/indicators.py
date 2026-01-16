@@ -403,7 +403,9 @@ def calculate_priority_score(
     gap_direction: str,
     market_cap: Optional[float] = None,
     volatility: Optional[float] = None,
-    weights: Optional[dict] = None
+    weights: Optional[dict] = None,
+    market_bias: Optional[str] = None,
+    signal_direction: Optional[str] = None
 ) -> float:
     """Calculate composite priority score for signal ranking.
 
@@ -415,7 +417,7 @@ def calculate_priority_score(
         rsi_score * 0.15 +
         market_cap_score * 0.20 +  # Increased to favor larger caps
         volatility_score * 0.10    # Increased penalty for high volatility
-    )
+    ) + market_direction_boost     # +15 aligned, -10 counter-trend
 
     Args:
         gap_pct: Gap percentage (absolute value used)
@@ -426,9 +428,11 @@ def calculate_priority_score(
         market_cap: Market capitalization in dollars (optional)
         volatility: Annualized volatility percentage (optional)
         weights: Optional custom weights dict
+        market_bias: Market bias from SPY ("BULLISH", "BEARISH", "NEUTRAL", etc.)
+        signal_direction: Signal direction ("LONG" or "SHORT")
 
     Returns:
-        Priority score (0-100)
+        Priority score (0-100, clamped)
     """
     # Default weights (2026-01-08: Updated to favor larger, more liquid stocks)
     if weights is None:
@@ -460,8 +464,8 @@ def calculate_priority_score(
     # Volatility score (lower volatility = higher score)
     vol_score = calculate_volatility_score(volatility)
 
-    # Weighted composite
-    priority = (
+    # Weighted composite (base score)
+    base_priority = (
         gap_score * weights['gap'] +
         volume_score * weights['volume'] +
         adx_score * weights['adx'] +
@@ -470,7 +474,15 @@ def calculate_priority_score(
         vol_score * weights['volatility']
     )
 
-    return round(priority, 2)
+    # Add market direction boost/penalty (2026-01-15)
+    direction_boost = 0.0
+    if market_bias and signal_direction:
+        direction_boost = calculate_market_direction_boost(market_bias, signal_direction)
+
+    final_priority = base_priority + direction_boost
+
+    # Clamp to 0-100 range
+    return round(max(0, min(100, final_priority)), 2)
 
 
 def get_position_tier(rank: int, total_signals: int, max_trades: int = 6) -> str:
@@ -515,3 +527,78 @@ def get_tier_multiplier(tier: str) -> float:
         'excluded': 0.0
     }
     return multipliers.get(tier, 1.0)
+
+
+def calculate_sma(prices: List[float], period: int = 20) -> Optional[float]:
+    """Calculate Simple Moving Average.
+
+    Args:
+        prices: List of closing prices (oldest to newest)
+        period: SMA period (default 20)
+
+    Returns:
+        SMA value or None if insufficient data
+    """
+    if not prices or len(prices) < period:
+        logger.warning(f"Insufficient data for SMA: need {period} prices, got {len(prices) if prices else 0}")
+        return None
+    return sum(prices[-period:]) / period
+
+
+def is_trending_in_direction(
+    close: float,
+    open_price: float,
+    prev_close: float,
+    direction: str
+) -> bool:
+    """Determine if price is trending in position direction.
+
+    Used for overnight holding decision:
+    - For LONG: Bullish if close > open (green candle) AND close > prev_close
+    - For SHORT: Bearish if close < open (red candle) AND close < prev_close
+
+    Args:
+        close: Current day's closing price
+        open_price: Current day's opening price
+        prev_close: Previous day's closing price
+        direction: Position direction ("LONG" or "SHORT")
+
+    Returns:
+        True if trending in the position's direction
+    """
+    if direction == "LONG":
+        # Bullish continuation: green candle AND higher close
+        return close > open_price and close > prev_close
+    else:  # SHORT
+        # Bearish continuation: red candle AND lower close
+        return close < open_price and close < prev_close
+
+
+def calculate_market_direction_boost(
+    market_bias: str,
+    signal_direction: str
+) -> float:
+    """Calculate score adjustment based on market direction alignment.
+
+    Boosts signals aligned with market direction, penalizes counter-trend signals.
+
+    Args:
+        market_bias: Market bias from SPY analysis
+                     ("STRONG_BULLISH", "BULLISH", "NEUTRAL", "BEARISH", "STRONG_BEARISH")
+        signal_direction: Signal direction ("LONG" or "SHORT")
+
+    Returns:
+        Score adjustment (-10 to +15 points)
+    """
+    # Aligned with market - boost
+    if market_bias in ["BULLISH", "STRONG_BULLISH"] and signal_direction == "LONG":
+        return 15.0
+    elif market_bias in ["BEARISH", "STRONG_BEARISH"] and signal_direction == "SHORT":
+        return 15.0
+    # Counter-trend - penalty
+    elif market_bias in ["BULLISH", "STRONG_BULLISH"] and signal_direction == "SHORT":
+        return -10.0
+    elif market_bias in ["BEARISH", "STRONG_BEARISH"] and signal_direction == "LONG":
+        return -10.0
+    # Neutral market - no adjustment
+    return 0.0
