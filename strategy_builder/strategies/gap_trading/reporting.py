@@ -640,9 +640,13 @@ class ReportGenerator:
 
     def _get_close_reasons(self, trades: List[Dict[str, Any]]) -> Tuple[int, int]:
         """Count trades by close reason."""
-        # Actual exit_reason values: STOP_LOSS, TARGET_HIT, EOD_CLOSE, MANUAL, REJECTED
-        stops = len([t for t in trades if t.get('exit_reason') == 'STOP_LOSS'])
-        eod = len([t for t in trades if t.get('exit_reason') == 'EOD_CLOSE'])
+        # Exit reason values: STOP_LOSS, STOP_LOSS_HIT, TARGET_HIT, EOD_CLOSE, MANUAL,
+        # REJECTED, BROKER_SYNC, MAX_HOLD_REACHED, NOT_TRENDING, MAX_HOLD_CLOSED, MISSING_DATA
+        stop_reasons = ['STOP_LOSS', 'STOP_LOSS_HIT']
+        eod_reasons = ['EOD_CLOSE', 'NOT_TRENDING', 'MAX_HOLD_REACHED', 'MAX_HOLD_CLOSED', 'MISSING_DATA']
+
+        stops = len([t for t in trades if t.get('exit_reason') in stop_reasons])
+        eod = len([t for t in trades if t.get('exit_reason') in eod_reasons])
         return stops, eod
 
     def _get_account_values(self, report_date: date) -> Tuple[float, float]:
