@@ -300,7 +300,15 @@ def get_market_cap_tier(market_cap: Optional[float]) -> str:
         market_cap: Market capitalization in dollars
 
     Returns:
-        Tier classification: MEGA, LARGE, MID, SMALL, MICRO
+        Tier classification: MEGA, LARGE, MID, SMALL, MICRO, NANO
+
+    Market Cap Tiers:
+        MEGA:  >= $200B    (e.g., AAPL, MSFT, GOOGL)
+        LARGE: $10B-$200B  (e.g., most S&P 500 stocks)
+        MID:   $2B-$10B    (e.g., mid-cap growth stocks)
+        SMALL: $300M-$2B   (e.g., small-cap stocks) - NOT TRADEABLE
+        MICRO: $50M-$300M  (e.g., micro-cap stocks) - NOT TRADEABLE
+        NANO:  < $50M      (e.g., penny stocks) - NOT TRADEABLE
     """
     if market_cap is None or market_cap <= 0:
         return "UNKNOWN"
@@ -313,8 +321,33 @@ def get_market_cap_tier(market_cap: Optional[float]) -> str:
         return "MID"
     elif market_cap >= 300_000_000:  # $300M - $2B
         return "SMALL"
-    else:  # < $300M
+    elif market_cap >= 50_000_000:  # $50M - $300M
         return "MICRO"
+    else:  # < $50M
+        return "NANO"
+
+
+# Tiers eligible for trading (only larger, more liquid stocks)
+TRADEABLE_MARKET_CAP_TIERS = {"MEGA", "LARGE", "MID"}
+
+
+def is_tradeable_market_cap(market_cap: Optional[float]) -> bool:
+    """Check if stock's market cap qualifies for trading.
+
+    Only MEGA, LARGE, and MID cap stocks are eligible for trading.
+    SMALL, MICRO, and NANO caps are excluded due to:
+    - Lower liquidity (wider spreads, harder to fill orders)
+    - Higher volatility and manipulation risk
+    - Less institutional coverage and support
+
+    Args:
+        market_cap: Market capitalization in dollars
+
+    Returns:
+        True if market cap tier is tradeable (MEGA, LARGE, or MID)
+    """
+    tier = get_market_cap_tier(market_cap)
+    return tier in TRADEABLE_MARKET_CAP_TIERS
 
 
 def calculate_market_cap_score(market_cap: Optional[float]) -> float:
